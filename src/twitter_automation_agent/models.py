@@ -10,6 +10,7 @@ class DraftStyle(StrEnum):
     neutral = "neutral"
     sharp = "sharp"
     spicy = "spicy"
+    ragebait = "ragebait"
 
 
 class Article(BaseModel):
@@ -17,6 +18,8 @@ class Article(BaseModel):
     url: HttpUrl
     source: str
     publisher: str | None = None
+    publisher_url: HttpUrl | None = None
+    resolved_url: HttpUrl | None = None
     published_at: datetime | None = None
     summary: str | None = None
     image_url: HttpUrl | None = None
@@ -32,11 +35,15 @@ class TweetDraft(BaseModel):
     rationale: str | None = None
 
 
-class PipelineResult(BaseModel):
-    topic: str
-    generated_at: datetime
-    selected_article: Article
-    candidates: list[Article]
+class DraftItem(BaseModel):
+    article: Article
     draft: TweetDraft
     posted: bool = False
     post_id: str | None = None
+
+
+class BatchPipelineResult(BaseModel):
+    topic: str
+    generated_at: datetime
+    candidates: list[Article]
+    drafts: list[DraftItem]

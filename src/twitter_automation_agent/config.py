@@ -11,8 +11,11 @@ from twitter_automation_agent.models import DraftStyle
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    openai_api_key: str | None = None
-    openai_model: str = "gpt-4.1-mini"
+    llm_provider: str = "ollama"
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3.2:3b"
+    huggingface_api_token: str | None = None
+    huggingface_model: str = "mistralai/Mistral-7B-Instruct-v0.3"
 
     x_api_key: str | None = None
     x_api_secret: str | None = None
@@ -22,8 +25,8 @@ class Settings(BaseSettings):
     serpapi_api_key: str | None = None
 
     news_lookback_hours: int = Field(default=24, ge=1, le=168)
-    max_articles: int = Field(default=20, ge=1, le=100)
-    default_style: DraftStyle = DraftStyle.spicy
+    max_articles: int = Field(default=80, ge=1, le=200)
+    default_style: DraftStyle = DraftStyle.ragebait
 
     @property
     def can_post_to_x(self) -> bool:

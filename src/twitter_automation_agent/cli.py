@@ -5,7 +5,6 @@ from pathlib import Path
 import typer
 from dotenv import load_dotenv
 from rich.console import Console
-from rich.panel import Panel
 from rich.table import Table
 
 from twitter_automation_agent.config import get_settings
@@ -35,9 +34,11 @@ def display_text(value: object) -> str:
 
 @app.command()
 def run(
-    topic: str = typer.Option("latest technology news", help="Topic to search for."),
+    topic: str | None = typer.Option(None, help="Optional topic bias. Omit for trending tech."),
     style: DraftStyle | None = typer.Option(None, help="Drafting style."),
+    count: int = typer.Option(20, min=1, max=50, help="Number of drafts to generate."),
     output_dir: Path = typer.Option(Path("outputs"), help="Directory for draft bundles."),
+    include_seen: bool = typer.Option(False, help="Allow articles generated in previous runs."),
     post: bool = typer.Option(False, help="Post to X/Twitter. Dry-run is the default."),
 ) -> None:
     """Run the full news-to-tweet pipeline."""
@@ -49,26 +50,38 @@ def run(
         raise typer.BadParameter("Posting requested, but X API credentials are incomplete.")
 
     pipeline = Pipeline(settings)
-    result = pipeline.run(topic=topic, style=selected_style, output_dir=output_dir, post=post)
-
-    console.print(
-        Panel.fit(
-            display_text(result.draft.text),
-            title="Tweet Draft" if not result.posted else f"Posted Tweet {result.post_id}",
-            border_style="cyan",
-        )
+    result = pipeline.run(
+        topic=topic,
+        style=selected_style,
+        output_dir=output_dir,
+        count=count,
+        post=post,
+        skip_history=not include_seen,
     )
-    console.print(f"[bold]Source:[/bold] {display_text(result.selected_article.title)}")
-    console.print(f"[bold]URL:[/bold] {result.selected_article.url}")
-    if result.draft.image_url:
-        console.print(f"[bold]Image:[/bold] {result.draft.image_url}")
-    if result.draft.image_path:
-        console.print(f"[bold]Downloaded:[/bold] {result.draft.image_path}")
+
+    table = Table(title=f"{len(result.drafts)} draft(s) for: {result.topic}")
+    table.add_column("#", justify="right")
+    table.add_column("Source")
+    table.add_column("Tweet")
+    table.add_column("Image")
+    table.add_column("Post")
+
+    for index, item in enumerate(result.drafts, start=1):
+        table.add_row(
+            str(index),
+            display_text(item.article.source),
+            display_text(item.draft.text),
+            "yes" if item.draft.image_path else "no",
+            item.post_id or ("posted" if item.posted else "dry-run"),
+        )
+
+    console.print(table)
+    console.print(f"[bold]Saved:[/bold] {output_dir}")
 
 
 @app.command()
 def sources(
-    topic: str = typer.Option("latest technology news", help="Topic to search for."),
+    topic: str | None = typer.Option(None, help="Optional topic bias. Omit for trending tech."),
     limit: int = typer.Option(10, min=1, max=50, help="Number of sources to show."),
 ) -> None:
     """Preview ranked source articles without drafting."""
@@ -80,7 +93,8 @@ def sources(
         limit=settings.max_articles,
     )
 
-    table = Table(title=f"Top sources for: {topic}")
+    label = topic or "trending tech news"
+    table = Table(title=f"Top sources for: {label}")
     table.add_column("Score", justify="right")
     table.add_column("Source")
     table.add_column("Title")

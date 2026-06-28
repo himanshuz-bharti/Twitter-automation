@@ -9,15 +9,29 @@ from urllib.parse import quote_plus, urlparse
 import feedparser
 import httpx
 from bs4 import BeautifulSoup
+from pydantic import HttpUrl, TypeAdapter
 
 from twitter_automation_agent.models import Article
 
+HttpUrlAdapter = TypeAdapter(HttpUrl)
+
 DEFAULT_FEEDS = [
     "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en",
+    "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-US&gl=US&ceid=US:en",
     "https://www.theverge.com/rss/index.xml",
     "https://techcrunch.com/feed/",
     "https://www.wired.com/feed/rss",
     "https://www.technologyreview.com/feed/",
+]
+
+TRENDING_TECH_QUERIES = [
+    "technology news when:1d",
+    "artificial intelligence news when:1d",
+    "startup funding technology when:1d",
+    "cybersecurity breach technology when:1d",
+    "semiconductor chips technology when:1d",
+    "big tech regulation when:1d",
+    "consumer technology product launch when:1d",
 ]
 
 PREFERRED_PUBLISHERS = {
@@ -88,6 +102,13 @@ def _entry_image(entry: feedparser.FeedParserDict) -> str | None:
     return None
 
 
+def _entry_source(entry: feedparser.FeedParserDict) -> tuple[str | None, str | None]:
+    source = entry.get("source") or {}
+    title = source.get("title") if isinstance(source, dict) else None
+    href = source.get("href") if isinstance(source, dict) else None
+    return title, href
+
+
 def _source_from_url(url: str) -> str:
     host = urlparse(url).netloc.lower().removeprefix("www.")
     return host or "unknown"
@@ -107,41 +128,64 @@ def _clean_title(title: str) -> str:
     return title
 
 
+def _valid_http_url(value: str | None) -> HttpUrl | None:
+    if not value:
+        return None
+    try:
+        return HttpUrlAdapter.validate_python(value)
+    except ValueError:
+        return None
+
+
 def _fingerprint(title: str) -> str:
     lowered = re.sub(r"[^a-z0-9]+", " ", title.lower())
     keywords = [token for token in lowered.split() if len(token) > 3]
     return hashlib.sha1(" ".join(keywords[:12]).encode("utf-8")).hexdigest()
 
 
-def article_relevance_score(article: Article, topic: str) -> float:
+def article_relevance_score(article: Article, topic: str | None, cluster_size: int = 1) -> float:
     haystack = f"{article.title} {article.summary or ''}".lower()
-    topic_terms = [term for term in re.split(r"\W+", topic.lower()) if len(term) > 2]
     score = 0.0
 
-    for term in topic_terms:
-        if term in haystack:
-            score += 5
+    if topic:
+        topic_terms = [term for term in re.split(r"\W+", topic.lower()) if len(term) > 2]
+        matched_topic_terms = 0
+        for term in topic_terms:
+            if term in haystack:
+                matched_topic_terms += 1
+                score += 5
+
+        if topic_terms and matched_topic_terms == 0:
+            score -= 8
+        elif matched_topic_terms == len(topic_terms):
+            score += 8
 
     spicy_terms = [
+        "ai",
+        "artificial intelligence",
         "launch",
+        "unveil",
+        "release",
         "released",
         "ban",
         "blocked",
+        "restrict",
+        "regulation",
         "lawsuit",
         "leak",
         "security",
-        "ai",
-        "openai",
-        "nvidia",
-        "apple",
-        "google",
-        "microsoft",
-        "meta",
+        "cyber",
         "chip",
+        "semiconductor",
         "model",
         "startup",
+        "funding",
+        "acquisition",
+        "privacy",
+        "antitrust",
     ]
     score += sum(1 for term in spicy_terms if term in haystack)
+    score += min(cluster_size, 5) * 2
 
     if article.image_url:
         score += 1.5
@@ -170,25 +214,36 @@ class NewsCollector:
         self.feeds = feeds or DEFAULT_FEEDS
         self.timeout = timeout
 
-    def collect(self, topic: str, lookback_hours: int, limit: int) -> list[Article]:
+    def collect(self, topic: str | None, lookback_hours: int, limit: int) -> list[Article]:
         cutoff = datetime.now(UTC) - timedelta(hours=lookback_hours)
         articles: list[Article] = []
 
         for feed_url in self._feed_urls(topic):
             articles.extend(self._collect_feed(feed_url, topic, cutoff))
 
-        deduped = self._dedupe(articles)
+        deduped, cluster_sizes = self._dedupe(articles)
         for article in deduped:
-            article.score = article_relevance_score(article, topic)
+            article.score = article_relevance_score(
+                article,
+                topic,
+                cluster_size=cluster_sizes.get(_fingerprint(article.title), 1),
+            )
 
         deduped.sort(key=lambda item: item.score, reverse=True)
         return deduped[:limit]
 
-    def _feed_urls(self, topic: str) -> list[str]:
-        query = quote_plus(f"{topic} technology when:1d")
-        return [feed.format(query=query) for feed in self.feeds]
+    def _feed_urls(self, topic: str | None) -> list[str]:
+        queries = [f"{topic} technology when:1d"] if topic else TRENDING_TECH_QUERIES
+        urls: list[str] = []
+        for feed in self.feeds:
+            if "{query}" not in feed:
+                urls.append(feed)
+                continue
+            for query in queries:
+                urls.append(feed.format(query=quote_plus(query)))
+        return urls
 
-    def _collect_feed(self, feed_url: str, topic: str, cutoff: datetime) -> list[Article]:
+    def _collect_feed(self, feed_url: str, topic: str | None, cutoff: datetime) -> list[Article]:
         try:
             response = httpx.get(
                 feed_url,
@@ -210,7 +265,8 @@ class NewsCollector:
             if not raw_title or not url:
                 continue
 
-            publisher = _publisher_from_title(raw_title)
+            feed_publisher, publisher_href = _entry_source(entry)
+            publisher = feed_publisher or _publisher_from_title(raw_title)
             title = _clean_title(raw_title)
             published_at = _entry_datetime(entry)
             if published_at and published_at < cutoff:
@@ -222,22 +278,25 @@ class NewsCollector:
                 url=url,
                 source=publisher or feed_title,
                 publisher=publisher,
+                publisher_url=_valid_http_url(publisher_href),
                 published_at=published_at,
                 summary=normalize_text(summary)[:500] or None,
-                image_url=_entry_image(entry),
+                image_url=_valid_http_url(_entry_image(entry)),
             )
             if article_relevance_score(article, topic) > 0:
                 articles.append(article)
 
         return articles
 
-    def _dedupe(self, articles: list[Article]) -> list[Article]:
+    def _dedupe(self, articles: list[Article]) -> tuple[list[Article], dict[str, int]]:
         seen: set[str] = set()
+        cluster_sizes: dict[str, int] = {}
         deduped: list[Article] = []
         for article in articles:
             key = _fingerprint(article.title)
+            cluster_sizes[key] = cluster_sizes.get(key, 0) + 1
             if key in seen:
                 continue
             seen.add(key)
             deduped.append(article)
-        return deduped
+        return deduped, cluster_sizes

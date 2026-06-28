@@ -7,6 +7,12 @@ from twitter_automation_agent.models import Article
 
 DISALLOWED_PATTERNS = [
     r"\bconfirmed\b.*\b(if|unless|rumou?r|reportedly)\b",
+    r"\bdemands?\s+silence\b",
+    r"\bcaving\s+to\s+pressure\b",
+    r"\bone\s+thing'?s\s+certain\b",
+    r"\bchilling\b",
+    r"\bundermines?\b",
+    r"\bapparently\b.*['\"]requested['\"]",
     r"\btraitor\b",
     r"\bcriminal\b",
     r"\bscam\b",
@@ -25,11 +31,11 @@ HIGH_RISK_CLAIMS = [
     "fraud",
     "criminal",
     "government",
-    "white house",
-    "trump",
-    "biden",
-    "congress",
-    "openai",
+    "demands",
+    "silence",
+    "pressure",
+    "chilling",
+    "undermines",
 ]
 
 

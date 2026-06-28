@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from openai import OpenAI
+import httpx
 
 from twitter_automation_agent.config import Settings
 from twitter_automation_agent.models import Article, DraftStyle, TweetDraft
@@ -10,30 +10,40 @@ from twitter_automation_agent.safety import validate_tweet_text
 
 
 STYLE_GUIDANCE = {
-    DraftStyle.neutral: "Write like a concise tech-news editor. No hype.",
-    DraftStyle.sharp: "Write with a direct, high-contrast angle. Be skeptical but fair.",
+    DraftStyle.neutral: "Concise tech-news editor. Clear, restrained, no hype.",
+    DraftStyle.sharp: "Direct, skeptical, high-contrast framing. Make the stakes obvious.",
     DraftStyle.spicy: (
-        "Write a punchy, debate-friendly tweet with tension and stakes. "
-        "Do not exaggerate, invent facts, or target private people."
+        "Eye-catching and provocative: use tension, stakes, and a strong hook. "
+        "Do not invent claims, smear people, or add unsupported outrage."
+    ),
+    DraftStyle.ragebait: (
+        "Maximum hook and controversy framing while staying factual. "
+        "Use a sharp first sentence and make the stakes feel urgent, but do not add moral "
+        "judgments like 'chilling', 'corrupt', 'caving', 'silenced', or 'undermining' unless "
+        "the article text uses those words. No fake claims, slurs, threats, or harassment."
     ),
 }
 
 
 SYSTEM_PROMPT = """You draft factual X/Twitter posts from source-grounded tech news.
 
-Rules:
+Hard rules:
 - Stay under 280 characters.
-- Use only facts present in the article title/summary/source metadata.
-- Do not invent numbers, quotes, accusations, motives, or government actions.
-- Do not say something is confirmed unless the source text supports it.
-- Avoid slurs, targeted harassment, and calls for abuse.
+- Use only facts present in the article title, summary, source, and publisher metadata.
+- Do not invent numbers, quotes, accusations, motives, government actions, or release details.
+- Do not claim something is confirmed unless the source text says it is confirmed.
+- Do not add loaded conclusions such as "chilling", "corrupt", "caving", "silenced",
+  "undermines", or "cover-up" unless the article text says that.
+- Do not use slurs, dehumanization, threats, or targeted harassment.
 - No hashtags unless one is naturally useful.
-- Make the tweet clickable and self-contained.
+- Return only the tweet text.
 """
 
 
 def _trim_to_tweet(text: str) -> str:
     text = re.sub(r"\s+", " ", text).strip().strip('"')
+    text = re.sub(r"^tweet:\s*", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"@([A-Za-z0-9_]{1,15})", r"\1", text)
     if len(text) <= 280:
         return text
 
@@ -41,63 +51,123 @@ def _trim_to_tweet(text: str) -> str:
     return f"{shortened}..."
 
 
+def _article_context(article: Article) -> str:
+    return f"""Title: {article.title}
+Source: {article.source}
+Publisher: {article.publisher or article.source}
+Published: {article.published_at.isoformat() if article.published_at else "unknown"}
+Summary: {article.summary or "none"}"""
+
+
 def fallback_draft(article: Article, style: DraftStyle) -> str:
     title = article.title.rstrip(".")
     if style == DraftStyle.neutral:
         text = f"{title}. Source: {article.source}"
     elif style == DraftStyle.sharp:
-        text = f"{title}. The part worth watching: what this changes next. Source: {article.source}"
+        text = f"{title}. Watch the access rules, not just the launch headline. Source: {article.source}"
+    elif style == DraftStyle.spicy:
+        text = f"{title}. The headline is loud, but the access restrictions are the real fight. Source: {article.source}"
     else:
-        text = f"{title}. Big if it holds up, and the fallout could move fast. Source: {article.source}"
+        text = f"{title}. AI insiders will argue over the rollout more than the model names. Source: {article.source}"
     return _trim_to_tweet(text)
 
 
 class TweetDrafter:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, timeout: float = 60.0) -> None:
         self.settings = settings
+        self.timeout = timeout
 
     def draft(self, article: Article, style: DraftStyle) -> TweetDraft:
-        if not self.settings.openai_api_key:
-            text = fallback_draft(article, style)
-            return TweetDraft(
-                text=text,
-                style=style,
-                article=article,
-                image_url=article.image_url,
-                rationale="Fallback template used because OPENAI_API_KEY is not configured.",
-            )
+        provider = self.settings.llm_provider.lower().strip()
+        text: str | None = None
+        provider_note = provider
 
-        client = OpenAI(api_key=self.settings.openai_api_key)
-        user_prompt = f"""Style: {style.value}
-Style guidance: {STYLE_GUIDANCE[style]}
+        if provider == "ollama":
+            text = self._draft_with_ollama(article, style)
+        elif provider in {"huggingface", "hf"}:
+            text = self._draft_with_huggingface(article, style)
+        elif provider in {"none", "fallback", "template"}:
+            provider_note = "fallback"
+        else:
+            provider_note = f"unknown provider '{provider}', fallback"
 
-Article:
-Title: {article.title}
-Source: {article.source}
-Published: {article.published_at.isoformat() if article.published_at else "unknown"}
-Summary: {article.summary or "none"}
-
-Draft one tweet. Return only the tweet text."""
-
-        response = client.responses.create(
-            model=self.settings.openai_model,
-            instructions=SYSTEM_PROMPT,
-            input=user_prompt,
-            temperature=0.7 if style == DraftStyle.spicy else 0.35,
-            max_output_tokens=120,
-        )
-        text = _trim_to_tweet(response.output_text)
+        text = _trim_to_tweet(text or fallback_draft(article, style))
         valid, reason = validate_tweet_text(text, article)
         if not valid:
             text = fallback_draft(article, style)
-            rationale = f"Model output failed safety validation ({reason}); fallback template used."
+            rationale = f"{provider_note} output failed validation ({reason}); fallback template used."
+        elif provider_note == "fallback":
+            rationale = "Fallback template used."
         else:
-            rationale = "Drafted from article metadata with factuality constraints."
+            rationale = f"Drafted with {provider_note} using factuality constraints."
 
         return TweetDraft(
-            text=text or fallback_draft(article, style),
+            text=text,
             style=style,
             article=article,
             image_url=article.image_url,
             rationale=rationale,
         )
+
+    def _prompt(self, article: Article, style: DraftStyle) -> str:
+        return f"""{SYSTEM_PROMPT}
+
+Style: {style.value}
+Style guidance: {STYLE_GUIDANCE[style]}
+
+Article:
+{_article_context(article)}
+
+Draft one tweet."""
+
+    def _draft_with_ollama(self, article: Article, style: DraftStyle) -> str | None:
+        try:
+            response = httpx.post(
+                f"{self.settings.ollama_base_url.rstrip('/')}/api/generate",
+                json={
+                    "model": self.settings.ollama_model,
+                    "prompt": self._prompt(article, style),
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.9 if style in {DraftStyle.spicy, DraftStyle.ragebait} else 0.35,
+                        "num_predict": 120,
+                    },
+                },
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+
+        data = response.json()
+        return data.get("response")
+
+    def _draft_with_huggingface(self, article: Article, style: DraftStyle) -> str | None:
+        if not self.settings.huggingface_api_token:
+            return None
+
+        prompt = f"<s>[INST] {self._prompt(article, style)} [/INST]"
+        try:
+            response = httpx.post(
+                f"https://api-inference.huggingface.co/models/{self.settings.huggingface_model}",
+                headers={"Authorization": f"Bearer {self.settings.huggingface_api_token}"},
+                json={
+                    "inputs": prompt,
+                    "parameters": {
+                        "max_new_tokens": 120,
+                        "temperature": 0.9 if style in {DraftStyle.spicy, DraftStyle.ragebait} else 0.35,
+                        "return_full_text": False,
+                    },
+                },
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+
+        data = response.json()
+        if isinstance(data, list) and data:
+            return data[0].get("generated_text")
+        if isinstance(data, dict):
+            return data.get("generated_text")
+        return None
