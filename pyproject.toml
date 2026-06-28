@@ -1,0 +1,40 @@
+[project]
+name = "twitter-automation-agent"
+version = "0.1.0"
+description = "A factual tech-news-to-X drafting and posting pipeline."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "beautifulsoup4>=4.12.3",
+    "feedparser>=6.0.11",
+    "httpx>=0.27.0",
+    "openai>=1.40.0",
+    "pydantic>=2.8.0",
+    "pydantic-settings>=2.4.0",
+    "python-dotenv>=1.0.1",
+    "rich>=13.7.1",
+    "typer>=0.12.3",
+    "tweepy>=4.14.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.5.5",
+]
+
+[project.scripts]
+tweet-agent = "twitter_automation_agent.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/twitter_automation_agent"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
