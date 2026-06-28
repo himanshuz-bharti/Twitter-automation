@@ -21,7 +21,6 @@ DISALLOWED_PATTERNS = [
     r"\bdestroy them\b",
 ]
 
-
 HIGH_RISK_CLAIMS = [
     "banned",
     "blocked",
@@ -38,9 +37,35 @@ HIGH_RISK_CLAIMS = [
     "undermines",
 ]
 
+NUMBER_WORDS = {
+    "zero": "0",
+    "one": "1",
+    "two": "2",
+    "three": "3",
+    "four": "4",
+    "five": "5",
+    "six": "6",
+    "seven": "7",
+    "eight": "8",
+    "nine": "9",
+    "ten": "10",
+    "eleven": "11",
+    "twelve": "12",
+    "third": "3",
+}
+
 
 def _source_text(article: Article) -> str:
     return f"{article.title} {article.summary or ''} {article.source}".lower()
+
+
+def _number_claims(value: str) -> set[str]:
+    lowered = value.lower()
+    claims = set(re.findall(r"\b\d+(?:\.\d+)?\b", lowered))
+    for word, number in NUMBER_WORDS.items():
+        if re.search(rf"\b{word}\b", lowered):
+            claims.add(number)
+    return claims
 
 
 def validate_tweet_text(text: str, article: Article) -> tuple[bool, str | None]:
@@ -58,5 +83,9 @@ def validate_tweet_text(text: str, article: Article) -> tuple[bool, str | None]:
     ]
     if unsupported_terms:
         return False, f"Tweet includes unsupported high-risk terms: {', '.join(unsupported_terms)}"
+
+    unsupported_numbers = sorted(_number_claims(text) - _number_claims(source))
+    if unsupported_numbers:
+        return False, f"Tweet includes unsupported numeric claims: {', '.join(unsupported_numbers)}"
 
     return True, None

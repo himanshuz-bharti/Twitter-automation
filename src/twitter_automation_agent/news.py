@@ -15,8 +15,10 @@ from twitter_automation_agent.models import Article
 
 HttpUrlAdapter = TypeAdapter(HttpUrl)
 
+GOOGLE_NEWS_SEARCH_FEED = "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
+
 DEFAULT_FEEDS = [
-    "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en",
+    GOOGLE_NEWS_SEARCH_FEED,
     "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-US&gl=US&ceid=US:en",
     "https://www.theverge.com/rss/index.xml",
     "https://techcrunch.com/feed/",
@@ -33,6 +35,23 @@ TRENDING_TECH_QUERIES = [
     "big tech regulation when:1d",
     "consumer technology product launch when:1d",
 ]
+
+TOPIC_STOPWORDS = {
+    "about",
+    "after",
+    "all",
+    "and",
+    "are",
+    "for",
+    "from",
+    "latest",
+    "new",
+    "news",
+    "the",
+    "this",
+    "today",
+    "with",
+}
 
 TECH_TERMS = {
     "ai",
@@ -73,17 +92,26 @@ PREFERRED_PUBLISHERS = {
     "axios": 5.0,
     "bloomberg": 5.0,
     "reuters": 5.0,
+    "associated press": 4.5,
+    "ap news": 4.5,
+    "bbc": 4.0,
+    "cnbc": 4.0,
+    "financial times": 4.0,
+    "the guardian": 4.0,
+    "the hill": 3.0,
+    "the new york times": 4.0,
+    "the wall street journal": 4.0,
+    "the washington post": 4.0,
     "the verge": 4.5,
     "wired": 4.0,
     "techcrunch": 4.0,
     "mit technology review": 4.0,
-    "the washington post": 4.0,
     "the information": 4.0,
-    "financial times": 4.0,
-    "the wall street journal": 4.0,
-    "associated press": 4.0,
-    "ap news": 4.0,
-    "the hill": 3.0,
+    "variety": 3.5,
+    "the hollywood reporter": 3.5,
+    "people": 3.0,
+    "entertainment weekly": 3.0,
+    "deadline": 3.0,
     "rnz": 2.0,
     "moneycontrol": 2.0,
 }
@@ -100,6 +128,54 @@ LOWER_CONFIDENCE_PUBLISHERS = {
 
 def normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _google_when_filter(lookback_hours: int) -> str:
+    days = max(1, min(7, (lookback_hours + 23) // 24))
+    return f"when:{days}d"
+
+
+def _dedupe_values(values: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        clean = normalize_text(value)
+        key = clean.lower()
+        if not clean or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(clean)
+    return deduped
+
+
+def _topic_terms(topic: str | None) -> list[str]:
+    if not topic:
+        return []
+
+    terms: list[str] = []
+    for token in re.findall(r"[A-Za-z0-9]+", topic):
+        lowered = token.lower()
+        if lowered in TOPIC_STOPWORDS or len(lowered) < 2:
+            continue
+        terms.append(lowered)
+    return _dedupe_values(terms)
+
+
+def _has_token(haystack: str, token: str) -> bool:
+    return re.search(rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", haystack) is not None
+
+
+def _topic_queries(topic: str, lookback_hours: int) -> list[str]:
+    clean_topic = normalize_text(topic)
+    when_filter = _google_when_filter(lookback_hours)
+    queries = [
+        f"{clean_topic} {when_filter}",
+        f"{clean_topic} news {when_filter}",
+        f"latest {clean_topic} {when_filter}",
+    ]
+    if " " in clean_topic:
+        queries.insert(1, f'"{clean_topic}" {when_filter}')
+    return _dedupe_values(queries)
 
 
 def _entry_datetime(entry: feedparser.FeedParserDict) -> datetime | None:
@@ -159,8 +235,55 @@ def _publisher_from_title(title: str) -> str | None:
 def _clean_title(title: str) -> str:
     publisher = _publisher_from_title(title)
     if publisher:
-        return title[: -(len(publisher) + 3)].strip()
+        title = title[: -(len(publisher) + 3)].strip()
+    if " | " in title:
+        parts = [part.strip() for part in title.split(" | ") if part.strip()]
+        if len(parts) > 1 and len(parts[-1].split()) <= 4:
+            title = " | ".join(parts[:-1])
     return title
+
+
+def _strip_trailing_publisher(text: str, publisher: str | None) -> str:
+    if not publisher:
+        return text.strip()
+
+    previous = None
+    clean = text.strip()
+    while clean and clean != previous:
+        previous = clean
+        clean = re.sub(
+            rf"(?:\s*[-|]\s*)?{re.escape(publisher)}$",
+            "",
+            clean,
+            flags=re.IGNORECASE,
+        ).strip(" -:|")
+    return clean
+
+
+def _clean_summary(summary: str, title: str, publisher: str | None) -> str | None:
+    text = normalize_text(summary)
+    if not text:
+        return None
+
+    text = _strip_trailing_publisher(text, publisher)
+    clean_title = normalize_text(title)
+    if clean_title and text.lower().startswith(clean_title.lower()):
+        text = text[len(clean_title) :].strip(" -:|")
+    text = _strip_trailing_publisher(text, publisher)
+
+    if not text or text.lower() == clean_title.lower():
+        return None
+    if len(text.split()) <= 2:
+        return None
+    return text[:500]
+
+
+def _story_haystack(article: Article) -> str:
+    return f"{article.title} {article.summary or ''}".lower()
+
+
+def _source_haystack(article: Article) -> str:
+    return f"{article.source} {article.publisher or ''}".lower()
 
 
 def _valid_http_url(value: str | None) -> HttpUrl | None:
@@ -179,47 +302,70 @@ def _fingerprint(title: str) -> str:
 
 
 def article_relevance_score(article: Article, topic: str | None, cluster_size: int = 1) -> float:
-    haystack = f"{article.title} {article.summary or ''}".lower()
+    haystack = _story_haystack(article)
     score = 0.0
 
     if topic:
-        topic_terms = [term for term in re.split(r"\W+", topic.lower()) if len(term) > 2]
-        matched_topic_terms = 0
-        for term in topic_terms:
-            if term in haystack:
-                matched_topic_terms += 1
-                score += 5
+        normalized_topic = normalize_text(topic).lower()
+        topic_terms = _topic_terms(topic)
+        matched_topic_terms = sum(1 for term in topic_terms if _has_token(haystack, term))
+        score += matched_topic_terms * 4
 
         if topic_terms and matched_topic_terms == 0:
-            score -= 8
-        elif matched_topic_terms == len(topic_terms):
-            score += 8
+            score -= 12
+        elif topic_terms and matched_topic_terms == len(topic_terms):
+            score += 12
+        elif len(topic_terms) > 1:
+            score -= 2
 
-    spicy_terms = [
-        "ai",
-        "artificial intelligence",
-        "launch",
-        "unveil",
-        "release",
-        "released",
+        if normalized_topic and normalized_topic in haystack:
+            score += 10
+
+    engagement_terms = [
+        "accused",
+        "backlash",
         "ban",
         "blocked",
-        "restrict",
-        "regulation",
+        "breaking",
+        "controversy",
+        "crackdown",
+        "crisis",
+        "deal",
+        "exclusive",
+        "fine",
+        "investigation",
         "lawsuit",
         "leak",
-        "security",
-        "cyber",
-        "chip",
-        "semiconductor",
-        "model",
-        "startup",
-        "funding",
-        "acquisition",
-        "privacy",
-        "antitrust",
+        "launch",
+        "probe",
+        "recall",
+        "release",
+        "released",
+        "restrict",
+        "scandal",
+        "strike",
+        "unveil",
+        "warn",
+        "warning",
     ]
-    score += sum(1 for term in spicy_terms if term in haystack)
+    if not topic:
+        engagement_terms.extend(
+            [
+                "ai",
+                "artificial intelligence",
+                "antitrust",
+                "chip",
+                "cyber",
+                "funding",
+                "model",
+                "privacy",
+                "regulation",
+                "security",
+                "semiconductor",
+                "startup",
+            ]
+        )
+    score += sum(1 for term in engagement_terms if term in haystack)
     score += min(cluster_size, 5) * 2
 
     if article.image_url:
@@ -246,10 +392,23 @@ def article_relevance_score(article: Article, topic: str | None, cluster_size: i
 
 def is_technology_article(article: Article, topic: str | None = None) -> bool:
     if topic:
-        return True
-    haystack = f"{article.title} {article.summary or ''} {article.source}".lower()
+        return is_topic_article(article, topic)
+    haystack = _story_haystack(article)
     return any(term in haystack for term in TECH_TERMS)
 
+
+def is_topic_article(article: Article, topic: str) -> bool:
+    story = _story_haystack(article)
+    source = _source_haystack(article)
+    normalized_topic = normalize_text(topic).lower()
+    topic_terms = _topic_terms(topic)
+    if not topic_terms:
+        return True
+    if normalized_topic and normalized_topic in story:
+        return True
+    if any(_has_token(story, term) for term in topic_terms):
+        return True
+    return sum(1 for term in topic_terms if _has_token(source, term)) >= max(2, len(topic_terms))
 
 class NewsCollector:
     def __init__(self, feeds: list[str] | None = None, timeout: float = 20.0) -> None:
@@ -260,7 +419,7 @@ class NewsCollector:
         cutoff = datetime.now(UTC) - timedelta(hours=lookback_hours)
         articles: list[Article] = []
 
-        for feed_url in self._feed_urls(topic):
+        for feed_url in self._feed_urls(topic, lookback_hours):
             articles.extend(self._collect_feed(feed_url, topic, cutoff))
 
         deduped, cluster_sizes = self._dedupe(articles)
@@ -274,8 +433,14 @@ class NewsCollector:
         deduped.sort(key=lambda item: item.score, reverse=True)
         return deduped[:limit]
 
-    def _feed_urls(self, topic: str | None) -> list[str]:
-        queries = [f"{topic} technology when:1d"] if topic else TRENDING_TECH_QUERIES
+    def _feed_urls(self, topic: str | None, lookback_hours: int) -> list[str]:
+        if topic:
+            return [
+                GOOGLE_NEWS_SEARCH_FEED.format(query=quote_plus(query))
+                for query in _topic_queries(topic, lookback_hours)
+            ]
+
+        queries = TRENDING_TECH_QUERIES
         urls: list[str] = []
         for feed in self.feeds:
             if "{query}" not in feed:
@@ -316,6 +481,7 @@ class NewsCollector:
                 continue
 
             summary = BeautifulSoup(entry.get("summary", ""), "html.parser").get_text(" ")
+            cleaned_summary = _clean_summary(summary, title, publisher)
             article = Article(
                 title=title,
                 url=url,
@@ -323,7 +489,7 @@ class NewsCollector:
                 publisher=publisher,
                 publisher_url=_valid_http_url(publisher_href),
                 published_at=published_at,
-                summary=normalize_text(summary)[:500] or None,
+                summary=cleaned_summary,
                 image_url=_valid_http_url(_entry_image(entry)),
             )
             if is_technology_article(article, topic) and article_relevance_score(article, topic) > 0:

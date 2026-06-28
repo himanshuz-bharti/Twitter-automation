@@ -12,7 +12,7 @@ from twitter_automation_agent.models import DraftStyle
 from twitter_automation_agent.pipeline import Pipeline
 
 app = typer.Typer(
-    help="Create factual tech-news X/Twitter drafts and deliver them for manual posting.",
+    help="Create factual news-based X/Twitter drafts and deliver them for manual posting.",
     pretty_exceptions_show_locals=False,
 )
 console = Console()
@@ -55,7 +55,7 @@ def add_result_rows(table: Table, drafts: list, fallback_status: str) -> None:
 
 @app.command()
 def run(
-    topic: str | None = typer.Option(None, help="Optional topic bias. Omit for trending tech."),
+    topic: str | None = typer.Option(None, help="Specific news topic to search. Omit for trending tech."),
     style: DraftStyle | None = typer.Option(None, help="Drafting style."),
     count: int = typer.Option(20, min=1, max=50, help="Number of drafts to generate."),
     output_dir: Path = typer.Option(Path("outputs"), help="Directory for draft bundles."),
@@ -94,7 +94,7 @@ def run(
 
 @app.command()
 def sources(
-    topic: str | None = typer.Option(None, help="Optional topic bias. Omit for trending tech."),
+    topic: str | None = typer.Option(None, help="Specific news topic to search. Omit for trending tech."),
     limit: int = typer.Option(10, min=1, max=50, help="Number of sources to show."),
 ) -> None:
     """Preview ranked source articles without drafting."""
@@ -126,7 +126,7 @@ def sources(
 
 @app.command()
 def autopost(
-    topic: str | None = typer.Option(None, help="Optional topic bias. Omit for trending tech."),
+    topic: str | None = typer.Option(None, help="Specific news topic to search. Omit for trending tech."),
     style: DraftStyle | None = typer.Option(None, help="Drafting style."),
     queue_size: int = typer.Option(20, min=1, max=50, help="Draft queue size to build first."),
     posts: int = typer.Option(20, min=1, max=50, help="Number of image-backed posts to publish."),
@@ -135,7 +135,7 @@ def autopost(
     include_seen: bool = typer.Option(False, help="Allow articles already posted through this command."),
     dry_run: bool = typer.Option(False, help="Build queue and simulate posting without using X."),
 ) -> None:
-    """Post ranked tech-news tweets to X. Requires paid X API credits."""
+    """Post ranked news tweets to X. Requires paid X API credits."""
     load_dotenv()
     settings = get_settings()
     selected_style = style or settings.default_style
@@ -168,7 +168,7 @@ def autopost(
 
 @app.command("telegram")
 def telegram_batch(
-    topic: str | None = typer.Option(None, help="Optional topic bias. Omit for trending tech."),
+    topic: str | None = typer.Option(None, help="Specific news topic to search. Omit for trending tech."),
     style: DraftStyle | None = typer.Option(None, help="Drafting style."),
     count: int = typer.Option(10, min=1, max=50, help="Number of image-backed drafts to send immediately."),
     output_dir: Path = typer.Option(Path("outputs"), help="Directory for batch/history files."),

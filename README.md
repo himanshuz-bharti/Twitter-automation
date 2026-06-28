@@ -1,8 +1,8 @@
 # Twitter Automation Agent
 
-This pipeline turns current tech news into factual, provocative X/Twitter drafts with a relevant image. Because X returned `402 Payment Required` for `/2/tweets`, the recommended flow is now manual posting:
+This pipeline turns current news topics into factual, provocative X/Twitter drafts with relevant image suggestions. Because X returned `402 Payment Required` for `/2/tweets`, the recommended flow is now manual posting:
 
-1. Collect recent tech stories from RSS feeds.
+1. Collect recent stories from Google News topic search, or trending tech feeds when no topic is supplied.
 2. Rank and deduplicate articles.
 3. Draft a tweet with a local/open model through Ollama, or Hugging Face as an optional provider.
 4. Resolve article links and fetch a relevant image.
@@ -97,10 +97,12 @@ Preview ranked sources without drafting:
 tweet-agent sources --limit 10
 ```
 
-You can bias the search when needed:
+You can search any current news topic when needed:
 
 ```powershell
 tweet-agent run --topic "AI models" --style ragebait --count 20
+
+tweet-agent run --topic "Bollywood gossip" --style ragebait --count 10
 ```
 
 ## Send Drafts To Telegram
@@ -119,7 +121,7 @@ Send 10 real drafts plus images to Telegram:
 tweet-agent telegram --topic "AI models" --count 10
 ```
 
-For general trending tech news, omit `--topic`:
+For trending tech news, omit `--topic`:
 
 ```powershell
 tweet-agent telegram --count 10
@@ -128,7 +130,7 @@ tweet-agent telegram --count 10
 ## Telegram Command Arguments
 
 - `--count`: number of image-backed drafts to send immediately. Defaults to `10`.
-- `--topic`: optional topic bias. Omit it for general trending tech news.
+- `--topic`: specific news topic to search, such as `AI models`, `Bollywood gossip`, `elections`, or `football transfers`. Omit it for trending tech news.
 - `--style`: draft style. Defaults to `DEFAULT_STYLE` from `.env`.
 - `--include-seen`: allows articles already sent through Telegram history.
 - `--dry-run`: builds the batch and image paths but does not send to Telegram.

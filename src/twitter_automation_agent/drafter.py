@@ -10,7 +10,7 @@ from twitter_automation_agent.safety import validate_tweet_text
 
 
 STYLE_GUIDANCE = {
-    DraftStyle.neutral: "Concise tech-news editor. Clear, restrained, no hype.",
+    DraftStyle.neutral: "Concise news editor. Clear, restrained, no hype.",
     DraftStyle.sharp: "Direct, skeptical, high-contrast framing. Make the stakes obvious.",
     DraftStyle.spicy: (
         "Eye-catching and provocative: use tension, stakes, and a strong hook. "
@@ -25,7 +25,7 @@ STYLE_GUIDANCE = {
 }
 
 
-SYSTEM_PROMPT = """You draft factual X/Twitter posts from source-grounded tech news.
+SYSTEM_PROMPT = """You draft factual X/Twitter posts from source-grounded news.
 
 Hard rules:
 - Stay under 280 characters.
@@ -40,12 +40,31 @@ Hard rules:
 """
 
 
-def _trim_to_tweet(text: str) -> str:
+def _strip_source_mentions(text: str, article: Article) -> str:
+    names = [article.source, article.publisher or ""]
+    for name in names:
+        clean_name = re.escape(name.strip())
+        if not clean_name:
+            continue
+        text = re.sub(
+            rf"\s*,?\s*(?:according to|reports?|via)(?:\s+a\s+report\s+(?:from|by)|\s+an\s+article\s+from)?\s+{clean_name}\b\.?,?",
+            ".",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(r"\s+([?.!,])", r"\1", text)
+        text = re.sub(r"\.\s*\.", ".", text)
+    return text
+
+
+def _trim_to_tweet(text: str, article: Article | None = None) -> str:
     text = re.sub(r"\s+", " ", text).strip().strip('"')
     text = re.sub(r"^tweet:\s*", "", text, flags=re.IGNORECASE).strip()
     text = re.sub(r"https?://\S+", "", text).strip()
     text = re.sub(r"\s*source:\s*.+$", "", text, flags=re.IGNORECASE).strip()
     text = re.sub(r"\s*publisher:\s*.+$", "", text, flags=re.IGNORECASE).strip()
+    if article:
+        text = _strip_source_mentions(text, article)
     text = re.sub(r"@([A-Za-z0-9_]{1,15})", r"\1", text)
     text = re.sub(r"\s+", " ", text).strip(" .")
     if len(text) <= 280:
@@ -72,8 +91,8 @@ def fallback_draft(article: Article, style: DraftStyle) -> str:
     elif style == DraftStyle.spicy:
         text = f"{title}. The headline is loud, but the access restrictions are the real fight."
     else:
-        text = f"{title}. AI insiders will argue over the rollout more than the model names."
-    return _trim_to_tweet(text)
+        text = f"{title}. The fight is in the details, not just the headline."
+    return _trim_to_tweet(text, article)
 
 
 class TweetDrafter:
@@ -95,7 +114,7 @@ class TweetDrafter:
         else:
             provider_note = f"unknown provider '{provider}', fallback"
 
-        text = _trim_to_tweet(text or fallback_draft(article, style))
+        text = _trim_to_tweet(text or fallback_draft(article, style), article)
         valid, reason = validate_tweet_text(text, article)
         if not valid:
             text = fallback_draft(article, style)
