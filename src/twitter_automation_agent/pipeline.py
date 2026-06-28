@@ -16,9 +16,10 @@ from twitter_automation_agent.images import ImageFinder
 from twitter_automation_agent.models import BatchPipelineResult, DraftItem, DraftStyle
 from twitter_automation_agent.news import NewsCollector
 from twitter_automation_agent.publisher import XPublisher
+from twitter_automation_agent.telegram import TelegramSender
 
 HttpUrlAdapter = TypeAdapter(HttpUrl)
-HistoryScope = Literal["drafted", "posted"]
+HistoryScope = Literal["drafted", "posted", "sent"]
 
 
 def _title_fingerprint(title: str) -> str:
@@ -33,6 +34,7 @@ class Pipeline:
         self.drafter = TweetDrafter(settings)
         self.images = ImageFinder(settings)
         self.publisher = XPublisher(settings)
+        self.telegram = TelegramSender(settings)
 
     def run(
         self,
@@ -113,10 +115,10 @@ class Pipeline:
             record_history=False,
         )
 
-        posted_count = 0
+        delivered_count = 0
         attempted_items: list[DraftItem] = []
         for item in result.drafts:
-            if posted_count >= posts:
+            if delivered_count >= posts:
                 break
 
             if not item.draft.image_path:
@@ -131,16 +133,71 @@ class Pipeline:
                 item.posted = True
                 self._append_history(output_dir, [item], "posted")
 
-            posted_count += 1
-            if posted_count < posts:
+            delivered_count += 1
+            if delivered_count < posts:
                 time.sleep(interval_minutes * 60)
 
         result.drafts = attempted_items
-        if posted_count < posts:
+        if delivered_count < posts:
             target = topic or "trending tech news"
             raise RuntimeError(
-                f"Only {posted_count} image-backed draft(s) were available for {target}; "
+                f"Only {delivered_count} image-backed draft(s) were available for {target}; "
                 f"requested {posts}. Try a larger --queue-size or run again later."
+            )
+
+        self._write_result(result, output_dir)
+        return result
+
+    def telegram_queue(
+        self,
+        topic: str | None,
+        style: DraftStyle,
+        output_dir: Path,
+        queue_size: int = 20,
+        sends: int = 20,
+        interval_minutes: float = 90.0,
+        skip_history: bool = True,
+        dry_run: bool = False,
+    ) -> BatchPipelineResult:
+        result = self.run(
+            topic=topic,
+            style=style,
+            output_dir=output_dir,
+            count=queue_size,
+            post=False,
+            skip_history=skip_history,
+            history_scope="sent",
+            record_history=False,
+        )
+
+        sent_count = 0
+        attempted_items: list[DraftItem] = []
+        for item in result.drafts:
+            if sent_count >= sends:
+                break
+
+            if not item.draft.image_path:
+                continue
+
+            attempted_items.append(item)
+            if dry_run:
+                item.posted = False
+                item.post_id = "telegram-dry-run"
+            else:
+                item.post_id = self.telegram.send_draft(item, sent_count + 1, sends)
+                item.posted = True
+                self._append_history(output_dir, [item], "sent")
+
+            sent_count += 1
+            if sent_count < sends:
+                time.sleep(interval_minutes * 60)
+
+        result.drafts = attempted_items
+        if sent_count < sends:
+            target = topic or "trending tech news"
+            raise RuntimeError(
+                f"Only {sent_count} image-backed draft(s) were available for {target}; "
+                f"requested {sends}. Try a larger --queue-size or run again later."
             )
 
         self._write_result(result, output_dir)
@@ -171,6 +228,8 @@ class Pipeline:
             "drafted_titles": [],
             "posted_urls": [],
             "posted_titles": [],
+            "sent_urls": [],
+            "sent_titles": [],
         }
 
     def _load_history(self, output_dir: Path) -> dict[str, list[str]]:
@@ -190,6 +249,8 @@ class Pipeline:
             "drafted_titles": sorted(set(legacy_titles) | set(data.get("drafted_titles", []))),
             "posted_urls": list(data.get("posted_urls", [])),
             "posted_titles": list(data.get("posted_titles", [])),
+            "sent_urls": list(data.get("sent_urls", [])),
+            "sent_titles": list(data.get("sent_titles", [])),
         }
 
     def _append_history(self, output_dir: Path, drafts: list[DraftItem], scope: HistoryScope) -> None:
@@ -212,6 +273,8 @@ class Pipeline:
                     "drafted_titles": sorted(set(history.get("drafted_titles", []))),
                     "posted_urls": sorted(set(history.get("posted_urls", []))),
                     "posted_titles": sorted(set(history.get("posted_titles", []))),
+                    "sent_urls": sorted(set(history.get("sent_urls", []))),
+                    "sent_titles": sorted(set(history.get("sent_titles", []))),
                     "updated_at": datetime.now(UTC).isoformat(),
                 },
                 indent=2,

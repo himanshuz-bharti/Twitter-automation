@@ -1,15 +1,15 @@
 # Twitter Automation Agent
 
-This is an MVP pipeline for turning current tech news into factual, provocative X/Twitter drafts with a relevant image candidate.
-
-The default development flow is dry-run first:
+This pipeline turns current tech news into factual, provocative X/Twitter drafts with a relevant image. Because X returned `402 Payment Required` for `/2/tweets`, the recommended flow is now manual posting:
 
 1. Collect recent tech stories from RSS feeds.
 2. Rank and deduplicate articles.
 3. Draft a tweet with a local/open model through Ollama, or Hugging Face as an optional provider.
-4. Resolve Google News links and scrape publisher/article metadata for a relevant image.
-5. Save a local draft bundle.
-6. Post to X with `--post` after the generated tweet and image look correct.
+4. Resolve article links and fetch a relevant image.
+5. Send the tweet draft plus image to Telegram.
+6. You manually post the text and image on X.
+
+The X posting code still exists if you later add paid X API credits.
 
 ## Setup
 
@@ -50,13 +50,129 @@ Good model options:
 - `mistral:7b`: bigger, fast, stronger hooks if your machine can run it
 - `llama3.1:8b`: bigger general-purpose alternative
 
-Run:
+If Ollama is not running, the app uses a deterministic fallback template instead of crashing.
+
+## Telegram Setup
+
+1. Open Telegram and message `@BotFather`.
+2. Send `/newbot` and follow the prompts.
+3. Copy the bot token into `.env`:
+
+```dotenv
+TELEGRAM_BOT_TOKEN=123456789:your_bot_token_here
+```
+
+4. Open a chat with your bot and send `/start`.
+5. Get your chat id by opening this URL in a browser, replacing `<TOKEN>` with your bot token:
+
+```text
+https://api.telegram.org/bot<TOKEN>/getUpdates
+```
+
+6. In the JSON response, copy `message.chat.id` into `.env`:
+
+```dotenv
+TELEGRAM_CHAT_ID=123456789
+```
+
+7. Verify Telegram delivery:
+
+```powershell
+tweet-agent telegram-check
+```
+
+For a group chat, add the bot to the group, send a message in the group, then use the group `chat.id` from `getUpdates`. Group ids are often negative numbers.
+
+## Generate Local Drafts
 
 ```powershell
 tweet-agent run --style ragebait --count 20
 ```
 
-If Ollama is not running, the app uses a deterministic fallback template instead of crashing.
+Output is written to `outputs/` as JSON. Downloaded images go to `outputs/images/`.
+
+Preview ranked sources without drafting:
+
+```powershell
+tweet-agent sources --limit 10
+```
+
+You can bias the search when needed:
+
+```powershell
+tweet-agent run --topic "AI models" --style ragebait --count 20
+```
+
+## Send Drafts To Telegram
+
+Test without sending anything:
+
+```powershell
+tweet-agent telegram --queue-size 20 --sends 1 --topic "AI models" --interval-minutes 0 --dry-run
+```
+
+Send one real draft plus image to Telegram:
+
+```powershell
+tweet-agent telegram --queue-size 20 --sends 1 --topic "AI models" --interval-minutes 0
+```
+
+Schedule 20 Telegram drafts, one every 90 minutes:
+
+```powershell
+tweet-agent telegram --queue-size 20 --sends 20 --interval-minutes 90
+```
+
+Keep the terminal running while the scheduled command is active. If you close it, the waiting loop stops.
+
+## Telegram Command Arguments
+
+- `--queue-size`: how many ranked drafts to generate first. Example: `20` means build a queue of 20 candidate drafts.
+- `--sends`: how many image-backed drafts to send to Telegram from that queue.
+- `--interval-minutes`: how long to wait between sends. The first send happens immediately.
+- `--topic`: optional topic bias. Omit it for general trending tech news.
+- `--style`: draft style. Defaults to `DEFAULT_STYLE` from `.env`.
+- `--include-seen`: allows articles already sent through Telegram history.
+- `--dry-run`: builds the queue and image paths but does not send to Telegram.
+
+Images are compulsory for Telegram delivery. Drafts without a downloaded image are skipped.
+
+## History Behavior
+
+The agent writes `outputs/history.json`.
+
+- `tweet-agent run` records drafted articles.
+- `tweet-agent telegram` records only articles actually sent to Telegram.
+- `tweet-agent autopost` records only articles actually posted to X.
+
+A Telegram dry run does not mark articles as sent, so you can dry-run first and then send the same top draft for real.
+
+## Optional X Posting
+
+X returned this error during real posting:
+
+```text
+HTTPException: 402 Payment Required
+Your enrolled account does not have any credits to fulfill this request.
+```
+
+That means OAuth worked, but the X developer account had no API credits for tweet creation. If you later add credits, verify X credentials:
+
+```powershell
+tweet-agent x-check
+```
+
+Then post one item:
+
+```powershell
+tweet-agent autopost --queue-size 20 --posts 1 --topic "AI models" --interval-minutes 0
+```
+
+Schedule 20 X posts, one every 90 minutes:
+
+```powershell
+tweet-agent autopost --queue-size 20 --posts 20 --interval-minutes 90
+```
 
 ## Optional Hugging Face Provider
 
@@ -75,129 +191,19 @@ HUGGINGFACE_MODEL=mistralai/Mistral-7B-Instruct-v0.3
 - `spicy`: punchy, high-stakes framing
 - `ragebait`: maximum hook and controversy framing, still source-grounded
 
-The agent will not fabricate claims, impersonate people, or generate targeted harassment. If a claim is not supported by the collected article metadata, the drafter is instructed to leave it out and a validator can force a fallback.
+The agent should not fabricate claims, impersonate people, or generate targeted harassment. If a claim is not supported by the collected article metadata, the drafter is instructed to leave it out and a validator can force a fallback.
 
 ## Image Fetching
 
-The image finder now tries, in order:
+The image finder tries, in order:
 
 1. Resolve the news URL to the publisher article.
 2. Scrape publisher `og:image` and `twitter:image`.
 3. Scan article `<img>` tags and rank likely article images.
 4. Use SerpAPI Google Images fallback if `SERPAPI_API_KEY` is configured.
-5. Use the RSS image only as a last resort.
+5. Use DuckDuckGo image scraping fallback.
+6. Use the RSS image only as a last resort.
 
-This is still scraping, so it depends on the publisher's HTML and robots/access behavior.
-
-## Preview Sources
-
-```powershell
-tweet-agent sources --limit 10
-```
-
-## Dry Run
-
-```powershell
-tweet-agent run --style ragebait --count 20
-```
-
-Output is written to `outputs/` as JSON. Downloaded images go to `outputs/images/`.
 Image filenames include a short URL hash so two images from the same domain do not overwrite each other.
-The agent also writes `outputs/history.json` and skips exact same article URLs/titles on later runs.
 
-You can still bias the search when needed:
-
-```powershell
-tweet-agent run --topic "AI chips" --style ragebait --count 20
-```
-
-To allow previously generated articles again:
-
-```powershell
-tweet-agent run --style ragebait --count 20 --include-seen
-```
-
-## How To Get X/Twitter API Keys
-
-1. Go to the X Developer Portal:
-
-```text
-https://developer.x.com/
-```
-
-2. Sign in with the X account that will own the app.
-3. Apply for developer access if your account does not already have it.
-4. Create a Project and App.
-5. In the app settings, enable User authentication.
-6. Set app permissions to `Read and write`. Use `Read and write and Direct message` only if you truly need DMs.
-7. Configure OAuth 1.0a user context. This project uses OAuth 1.0a because media upload still commonly relies on the v1.1 media endpoint.
-8. Add a callback URL if the portal requires one. For local/manual scripts you can use something like:
-
-```text
-http://localhost:3000/callback
-```
-
-9. Go to Keys and tokens.
-10. Copy or generate:
-
-- API Key
-- API Key Secret
-- Access Token
-- Access Token Secret
-
-11. Put them in `.env`:
-
-```dotenv
-X_API_KEY=your_api_key
-X_API_SECRET=your_api_key_secret
-X_ACCESS_TOKEN=your_access_token
-X_ACCESS_TOKEN_SECRET=your_access_token_secret
-```
-
-12. Confirm the app permissions are `Read and write`. If you changed permissions after creating tokens, regenerate the access token and secret.
-
-## Post To X
-
-Always test with dry-run first:
-
-```powershell
-tweet-agent run --style ragebait --count 20
-```
-
-To post the batch immediately:
-
-```powershell
-tweet-agent run --style ragebait --count 20 --post
-```
-
-## Autopost Queue
-
-The intended agent flow is:
-
-1. Build a ranked queue of 20 trending tech drafts.
-2. Require a downloaded image for any post.
-3. Post the highest-ranked image-backed draft immediately.
-4. Wait 90 minutes.
-5. Post the next image-backed draft.
-6. Continue until the requested number of posts is published.
-
-Test the flow without posting or waiting:
-
-```powershell
-tweet-agent autopost --queue-size 20 --posts 2 --interval-minutes 0 --dry-run
-```
-
-Run the real 90-minute cadence:
-
-```powershell
-tweet-agent autopost --queue-size 20 --posts 20 --interval-minutes 90
-```
-
-Keep the terminal running while `autopost` is active. If you close it, the waiting loop stops.
-
-Notes:
-
-- X API access level and pricing changes over time.
-- Free/basic tiers may have strict posting limits or may not include every endpoint.
-- If image upload fails, verify your app has OAuth 1.0a credentials and write permission.
-- Keep credentials out of git. `.env` is ignored by this repo.
+Keep credentials out of git. `.env` is ignored by this repo.

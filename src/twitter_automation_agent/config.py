@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     x_access_token: str | None = None
     x_access_token_secret: str | None = None
 
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+
     serpapi_api_key: str | None = None
 
     news_lookback_hours: int = Field(default=24, ge=1, le=168)
@@ -38,6 +41,10 @@ class Settings(BaseSettings):
                 self.x_access_token_secret,
             ]
         )
+
+    @property
+    def can_send_to_telegram(self) -> bool:
+        return bool(self.telegram_bot_token and self.telegram_chat_id)
 
 
 @lru_cache
