@@ -70,7 +70,7 @@ class Pipeline:
             draft = self.drafter.draft(article, style)
             image_candidates = self.images.find_candidates(article, draft_text=draft.text, limit=12)
             for image_url in image_candidates:
-                if len(draft.image_suggestions) >= 5:
+                if len(draft.image_suggestions) >= 3:
                     break
                 image_path = self.images.download(image_url, output_dir / "images")
                 if not image_path:

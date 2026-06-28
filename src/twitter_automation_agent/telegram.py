@@ -39,8 +39,8 @@ class TelegramSender:
         if not image_paths and item.draft.image_path:
             image_paths = [item.draft.image_path]
 
-        total_images = min(len(image_paths), 5)
-        for image_index, image_path in enumerate(image_paths[:5], start=1):
+        total_images = min(len(image_paths), 3)
+        for image_index, image_path in enumerate(image_paths[:3], start=1):
             image_id = self._send_photo(
                 Path(image_path),
                 caption=f"{label} - Image {image_index}/{total_images}",
@@ -84,7 +84,7 @@ class TelegramSender:
             "",
             item.draft.text,
             "",
-            f"Images: {min(image_count, 5)} suggestions attached below",
+            f"Images: {min(image_count, 3)} suggestions attached below",
             f"Source: {item.article.source}",
             source_url,
         ]
@@ -94,7 +94,7 @@ class TelegramSender:
         if len(text) <= 4096:
             return text
         source_url = str(item.article.resolved_url or item.article.url)
-        suffix = f"\n\nImages: 5 suggestions attached below\nSource: {item.article.source}\n{source_url}"
+        suffix = f"\n\nImages: 3 suggestions attached below\nSource: {item.article.source}\n{source_url}"
         budget = 4096 - len(label) - len("\n\n") - len(suffix) - 3
         shortened_text = item.draft.text[: max(40, budget)].rsplit(" ", 1)[0].rstrip()
         return f"{label}\n\n{shortened_text}...{suffix}"

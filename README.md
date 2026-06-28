@@ -149,14 +149,7 @@ A Telegram dry run does not mark articles as sent, so you can dry-run first and 
 
 ## Optional X Posting
 
-X returned this error during real posting:
-
-```text
-HTTPException: 402 Payment Required
-Your enrolled account does not have any credits to fulfill this request.
-```
-
-That means OAuth worked, but the X developer account had no API credits for tweet creation. If you later add credits, verify X credentials:
+Test X workflow
 
 ```powershell
 tweet-agent x-check
