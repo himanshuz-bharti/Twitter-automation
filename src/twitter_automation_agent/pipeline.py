@@ -157,14 +157,12 @@ class Pipeline:
         self._write_result(result, output_dir)
         return result
 
-    def telegram_queue(
+    def send_telegram_batch(
         self,
         topic: str | None,
         style: DraftStyle,
         output_dir: Path,
-        queue_size: int = 20,
-        sends: int = 20,
-        interval_minutes: float = 90.0,
+        count: int = 10,
         skip_history: bool = True,
         dry_run: bool = False,
     ) -> BatchPipelineResult:
@@ -172,41 +170,36 @@ class Pipeline:
             topic=topic,
             style=style,
             output_dir=output_dir,
-            count=queue_size,
+            count=count,
             post=False,
             skip_history=skip_history,
             history_scope="sent",
             record_history=False,
         )
 
-        sent_count = 0
-        attempted_items: list[DraftItem] = []
+        sent_items: list[DraftItem] = []
         for item in result.drafts:
-            if sent_count >= sends:
-                break
-
             if not item.draft.image_path:
                 continue
 
-            attempted_items.append(item)
+            sent_items.append(item)
             if dry_run:
                 item.posted = False
                 item.post_id = "telegram-dry-run"
             else:
-                item.post_id = self.telegram.send_draft(item, sent_count + 1, sends)
+                item.post_id = self.telegram.send_draft(item, len(sent_items), count)
                 item.posted = True
                 self._append_history(output_dir, [item], "sent")
 
-            sent_count += 1
-            if sent_count < sends:
-                time.sleep(interval_minutes * 60)
+            if len(sent_items) >= count:
+                break
 
-        result.drafts = attempted_items
-        if sent_count < sends:
+        result.drafts = sent_items
+        if len(sent_items) < count:
             target = topic or "trending tech news"
             raise RuntimeError(
-                f"Only {sent_count} image-backed draft(s) were available for {target}; "
-                f"requested {sends}. Try a larger --queue-size or run again later."
+                f"Only {len(sent_items)} image-backed draft(s) were available for {target}; "
+                f"requested {count}. Try --include-seen or run again later."
             )
 
         self._write_result(result, output_dir)

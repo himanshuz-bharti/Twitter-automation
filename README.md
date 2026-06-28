@@ -105,35 +105,33 @@ tweet-agent run --topic "AI models" --style ragebait --count 20
 
 ## Send Drafts To Telegram
 
+Each run builds and sends a fresh batch immediately. The default is 10 image-backed tweet drafts.
+
 Test without sending anything:
 
 ```powershell
-tweet-agent telegram --queue-size 20 --sends 1 --topic "AI models" --interval-minutes 0 --dry-run
+tweet-agent telegram --topic "AI models" --count 10 --dry-run
 ```
 
-Send one real draft plus image to Telegram:
+Send 10 real drafts plus images to Telegram:
 
 ```powershell
-tweet-agent telegram --queue-size 20 --sends 1 --topic "AI models" --interval-minutes 0
+tweet-agent telegram --topic "AI models" --count 10
 ```
 
-Schedule 20 Telegram drafts, one every 90 minutes:
+For general trending tech news, omit `--topic`:
 
 ```powershell
-tweet-agent telegram --queue-size 20 --sends 20 --interval-minutes 90
+tweet-agent telegram --count 10
 ```
-
-Keep the terminal running while the scheduled command is active. If you close it, the waiting loop stops.
 
 ## Telegram Command Arguments
 
-- `--queue-size`: how many ranked drafts to generate first. Example: `20` means build a queue of 20 candidate drafts.
-- `--sends`: how many image-backed drafts to send to Telegram from that queue.
-- `--interval-minutes`: how long to wait between sends. The first send happens immediately.
+- `--count`: number of image-backed drafts to send immediately. Defaults to `10`.
 - `--topic`: optional topic bias. Omit it for general trending tech news.
 - `--style`: draft style. Defaults to `DEFAULT_STYLE` from `.env`.
 - `--include-seen`: allows articles already sent through Telegram history.
-- `--dry-run`: builds the queue and image paths but does not send to Telegram.
+- `--dry-run`: builds the batch and image paths but does not send to Telegram.
 
 Images are compulsory for Telegram delivery. Drafts without a downloaded image are skipped.
 

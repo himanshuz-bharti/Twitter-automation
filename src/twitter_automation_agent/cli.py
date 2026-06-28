@@ -167,17 +167,15 @@ def autopost(
 
 
 @app.command("telegram")
-def telegram_queue(
+def telegram_batch(
     topic: str | None = typer.Option(None, help="Optional topic bias. Omit for trending tech."),
     style: DraftStyle | None = typer.Option(None, help="Drafting style."),
-    queue_size: int = typer.Option(20, min=1, max=50, help="Draft queue size to build first."),
-    sends: int = typer.Option(20, min=1, max=50, help="Number of image-backed drafts to send."),
-    interval_minutes: float = typer.Option(90.0, min=0.0, help="Minutes to wait between Telegram sends."),
-    output_dir: Path = typer.Option(Path("outputs"), help="Directory for queue/history files."),
+    count: int = typer.Option(10, min=1, max=50, help="Number of image-backed drafts to send immediately."),
+    output_dir: Path = typer.Option(Path("outputs"), help="Directory for batch/history files."),
     include_seen: bool = typer.Option(False, help="Allow articles already sent through this command."),
-    dry_run: bool = typer.Option(False, help="Build queue and simulate Telegram delivery."),
+    dry_run: bool = typer.Option(False, help="Build the batch without sending to Telegram."),
 ) -> None:
-    """Send ranked tweet drafts plus images to Telegram for manual posting."""
+    """Send a batch of ranked tweet drafts plus images to Telegram immediately."""
     load_dotenv()
     settings = get_settings()
     selected_style = style or settings.default_style
@@ -185,13 +183,11 @@ def telegram_queue(
     if not dry_run and not settings.can_send_to_telegram:
         raise typer.BadParameter("Telegram credentials are incomplete.")
 
-    result = Pipeline(settings).telegram_queue(
+    result = Pipeline(settings).send_telegram_batch(
         topic=topic,
         style=selected_style,
         output_dir=output_dir,
-        queue_size=queue_size,
-        sends=sends,
-        interval_minutes=interval_minutes,
+        count=count,
         skip_history=not include_seen,
         dry_run=dry_run,
     )
