@@ -34,6 +34,41 @@ TRENDING_TECH_QUERIES = [
     "consumer technology product launch when:1d",
 ]
 
+TECH_TERMS = {
+    "ai",
+    "algorithm",
+    "app",
+    "artificial intelligence",
+    "autonomous",
+    "chip",
+    "cloud",
+    "computer",
+    "cyber",
+    "data",
+    "device",
+    "digital",
+    "gadget",
+    "gemini",
+    "gpu",
+    "hardware",
+    "internet",
+    "laptop",
+    "llm",
+    "machine learning",
+    "model",
+    "phone",
+    "platform",
+    "privacy",
+    "processor",
+    "robot",
+    "security",
+    "semiconductor",
+    "software",
+    "startup",
+    "tech",
+    "technology",
+}
+
 PREFERRED_PUBLISHERS = {
     "axios": 5.0,
     "bloomberg": 5.0,
@@ -209,6 +244,13 @@ def article_relevance_score(article: Article, topic: str | None, cluster_size: i
     return score
 
 
+def is_technology_article(article: Article, topic: str | None = None) -> bool:
+    if topic:
+        return True
+    haystack = f"{article.title} {article.summary or ''} {article.source}".lower()
+    return any(term in haystack for term in TECH_TERMS)
+
+
 class NewsCollector:
     def __init__(self, feeds: list[str] | None = None, timeout: float = 20.0) -> None:
         self.feeds = feeds or DEFAULT_FEEDS
@@ -250,6 +292,7 @@ class NewsCollector:
                 timeout=self.timeout,
                 follow_redirects=True,
                 headers={"User-Agent": "TwitterAutomationAgent/0.1"},
+                trust_env=False,
             )
             response.raise_for_status()
         except httpx.HTTPError:
@@ -283,7 +326,7 @@ class NewsCollector:
                 summary=normalize_text(summary)[:500] or None,
                 image_url=_valid_http_url(_entry_image(entry)),
             )
-            if article_relevance_score(article, topic) > 0:
+            if is_technology_article(article, topic) and article_relevance_score(article, topic) > 0:
                 articles.append(article)
 
         return articles

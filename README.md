@@ -102,6 +102,7 @@ tweet-agent run --style ragebait --count 20
 ```
 
 Output is written to `outputs/` as JSON. Downloaded images go to `outputs/images/`.
+Image filenames include a short URL hash so two images from the same domain do not overwrite each other.
 The agent also writes `outputs/history.json` and skips exact same article URLs/titles on later runs.
 
 You can still bias the search when needed:
@@ -163,11 +164,36 @@ Always test with dry-run first:
 tweet-agent run --style ragebait --count 20
 ```
 
-Then post:
+To post the batch immediately:
 
 ```powershell
 tweet-agent run --style ragebait --count 20 --post
 ```
+
+## Autopost Queue
+
+The intended agent flow is:
+
+1. Build a ranked queue of 20 trending tech drafts.
+2. Require a downloaded image for any post.
+3. Post the highest-ranked image-backed draft immediately.
+4. Wait 90 minutes.
+5. Post the next image-backed draft.
+6. Continue until the requested number of posts is published.
+
+Test the flow without posting or waiting:
+
+```powershell
+tweet-agent autopost --queue-size 20 --posts 2 --interval-minutes 0 --dry-run
+```
+
+Run the real 90-minute cadence:
+
+```powershell
+tweet-agent autopost --queue-size 20 --posts 20 --interval-minutes 90
+```
+
+Keep the terminal running while `autopost` is active. If you close it, the waiting loop stops.
 
 Notes:
 

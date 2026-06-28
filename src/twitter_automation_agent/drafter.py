@@ -134,6 +134,7 @@ Draft one tweet."""
                     },
                 },
                 timeout=self.timeout,
+                trust_env=False,
             )
             response.raise_for_status()
         except httpx.HTTPError:
@@ -160,6 +161,7 @@ Draft one tweet."""
                     },
                 },
                 timeout=self.timeout,
+                trust_env=False,
             )
             response.raise_for_status()
         except httpx.HTTPError:

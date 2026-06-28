@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import mimetypes
 import re
+import hashlib
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
@@ -38,6 +39,9 @@ STOPWORDS = {
     "under",
     "what",
     "with",
+    "world",
+    "year",
+    "years",
 }
 GENERIC_IMAGE_TERMS = [
     "technology",
@@ -120,6 +124,22 @@ def _ordered_keywords(value: str) -> list[str]:
     return ordered
 
 
+def _capitalized_phrases(value: str) -> list[str]:
+    phrases = re.findall(
+        r"\b[A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+){0,3}\b",
+        value,
+    )
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for phrase in phrases:
+        normalized = phrase.strip()
+        if normalized.lower() in STOPWORDS or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
+
+
 class ImageFinder:
     def __init__(self, settings: Settings, timeout: float = 20.0) -> None:
         self.settings = settings
@@ -130,9 +150,9 @@ class ImageFinder:
         candidate_urls = self._article_page_candidates(article)
 
         for page_url in candidate_urls:
-            image_url = self._extract_best_article_image(page_url, article)
-            if image_url:
-                return image_url
+            image_candidate = self._extract_best_article_image(page_url, article)
+            if image_candidate and image_candidate[0] >= 8:
+                return image_candidate[1]
 
         if self.settings.serpapi_api_key:
             serp_image = self._serpapi_image(search_query)
@@ -156,6 +176,7 @@ class ImageFinder:
                 follow_redirects=True,
                 timeout=self.timeout,
                 headers={"User-Agent": "Mozilla/5.0 TwitterAutomationAgent/0.1"},
+                trust_env=False,
             )
             response.raise_for_status()
         except httpx.HTTPError:
@@ -171,7 +192,8 @@ class ImageFinder:
         if not suffix:
             suffix = Path(urlparse(image_url).path).suffix or ".jpg"
 
-        path = output_dir / f"{safe_filename(urlparse(image_url).netloc)}{suffix}"
+        image_hash = hashlib.sha1(image_url.encode("utf-8")).hexdigest()[:10]
+        path = output_dir / f"{safe_filename(urlparse(image_url).netloc)}-{image_hash}{suffix}"
         path.write_bytes(response.content)
         return path
 
@@ -195,6 +217,7 @@ class ImageFinder:
                 follow_redirects=True,
                 timeout=self.timeout,
                 headers={"User-Agent": "Mozilla/5.0 TwitterAutomationAgent/0.1"},
+                trust_env=False,
             )
             response.raise_for_status()
         except httpx.HTTPError:
@@ -218,13 +241,14 @@ class ImageFinder:
                 return href
         return None
 
-    def _extract_best_article_image(self, article_url: str, article: Article) -> str | None:
+    def _extract_best_article_image(self, article_url: str, article: Article) -> tuple[int, str] | None:
         try:
             response = httpx.get(
                 article_url,
                 follow_redirects=True,
                 timeout=self.timeout,
                 headers={"User-Agent": "Mozilla/5.0 TwitterAutomationAgent/0.1"},
+                trust_env=False,
             )
             response.raise_for_status()
         except httpx.HTTPError:
@@ -265,7 +289,7 @@ class ImageFinder:
         ranked = sorted(candidates, key=lambda item: item[0], reverse=True)
         for score, url in ranked:
             if score >= 4 and self._is_usable_image_url(url):
-                return url
+                return score, url
         return None
 
     def _content_match_score(self, image_url: str, alt: str, article_keywords: set[str]) -> int:
@@ -279,16 +303,23 @@ class ImageFinder:
 
     def _image_query(self, article: Article) -> str:
         keyword_text = f"{article.title} {article.summary or ''} {article.source}"
+        entities = _capitalized_phrases(article.title)
         keywords = _ordered_keywords(keyword_text)
-        priority_terms = keywords[:6]
-        if not priority_terms:
+        terms: list[str] = []
+        for term in [*entities, *keywords]:
+            if term.lower() not in {item.lower() for item in terms}:
+                terms.append(term)
+            if len(terms) >= 6:
+                break
+
+        if not terms:
             return "technology news"
 
         generic_hint = next(
             (term for term in GENERIC_IMAGE_TERMS if any(part in keyword_text.lower() for part in term.split())),
             "technology news",
         )
-        return " ".join([*priority_terms, generic_hint, "news image"])
+        return " ".join([*terms, generic_hint, "photo logo image"])
 
     def _largest_srcset_url(self, srcset: str) -> str | None:
         best_url: str | None = None
@@ -325,6 +356,7 @@ class ImageFinder:
                     "safe": "active",
                 },
                 timeout=self.timeout,
+                trust_env=False,
             )
             response.raise_for_status()
         except httpx.HTTPError:
@@ -344,6 +376,7 @@ class ImageFinder:
                 params={"q": query},
                 timeout=self.timeout,
                 headers={"User-Agent": "Mozilla/5.0 TwitterAutomationAgent/0.1"},
+                trust_env=False,
             )
             response.raise_for_status()
         except httpx.HTTPError:
@@ -368,6 +401,7 @@ class ImageFinder:
                     "User-Agent": "Mozilla/5.0 TwitterAutomationAgent/0.1",
                     "Referer": str(response.url),
                 },
+                trust_env=False,
             )
             image_response.raise_for_status()
         except httpx.HTTPError:
