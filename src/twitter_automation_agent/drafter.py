@@ -36,14 +36,18 @@ Hard rules:
   "undermines", or "cover-up" unless the article text says that.
 - Do not use slurs, dehumanization, threats, or targeted harassment.
 - No hashtags unless one is naturally useful.
-- Return only the tweet text.
+- Return only the tweet text. Do not include source labels, URLs, article links, or publisher names unless the publisher is part of the news itself.
 """
 
 
 def _trim_to_tweet(text: str) -> str:
     text = re.sub(r"\s+", " ", text).strip().strip('"')
     text = re.sub(r"^tweet:\s*", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"https?://\S+", "", text).strip()
+    text = re.sub(r"\s*source:\s*.+$", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"\s*publisher:\s*.+$", "", text, flags=re.IGNORECASE).strip()
     text = re.sub(r"@([A-Za-z0-9_]{1,15})", r"\1", text)
+    text = re.sub(r"\s+", " ", text).strip(" .")
     if len(text) <= 280:
         return text
 

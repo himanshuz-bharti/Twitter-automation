@@ -33,20 +33,17 @@ class TelegramSender:
         if not item.draft.image_path:
             raise RuntimeError("Telegram delivery requires a downloaded image for every draft.")
 
-        label = f"Draft {index}/{total}" if index and total else "Tweet draft"
-        message_id = self.send_text(self._draft_message(item, label))
+        message_id = self.send_text(item.draft.text)
         image_paths = [suggestion.path for suggestion in item.draft.image_suggestions]
         if not image_paths and item.draft.image_path:
             image_paths = [item.draft.image_path]
 
         total_images = min(len(image_paths), 3)
         for image_index, image_path in enumerate(image_paths[:3], start=1):
-            image_id = self._send_photo(
+            self._send_photo(
                 Path(image_path),
-                caption=f"{label} - Image {image_index}/{total_images}",
+                caption=f"Image {image_index}/{total_images}",
             )
-            if image_index == 1:
-                message_id = image_id
 
         return message_id
 
@@ -76,28 +73,6 @@ class TelegramSender:
         message_id = result.get("message_id")
         return str(message_id) if message_id is not None else "sent"
 
-    def _draft_message(self, item: DraftItem, label: str) -> str:
-        source_url = str(item.article.resolved_url or item.article.url)
-        image_count = len(item.draft.image_suggestions) or (1 if item.draft.image_path else 0)
-        parts = [
-            label,
-            "",
-            item.draft.text,
-            "",
-            f"Images: {min(image_count, 3)} suggestions attached below",
-            f"Source: {item.article.source}",
-            source_url,
-        ]
-        return self._fit_message("\n".join(parts), item, label)
-
-    def _fit_message(self, text: str, item: DraftItem, label: str) -> str:
-        if len(text) <= 4096:
-            return text
-        source_url = str(item.article.resolved_url or item.article.url)
-        suffix = f"\n\nImages: 3 suggestions attached below\nSource: {item.article.source}\n{source_url}"
-        budget = 4096 - len(label) - len("\n\n") - len(suffix) - 3
-        shortened_text = item.draft.text[: max(40, budget)].rsplit(" ", 1)[0].rstrip()
-        return f"{label}\n\n{shortened_text}...{suffix}"
 
     def _request(self, method: str, **kwargs: object) -> httpx.Response:
         token = self.settings.telegram_bot_token
