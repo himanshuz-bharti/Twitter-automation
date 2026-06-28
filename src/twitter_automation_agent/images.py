@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import mimetypes
 import re
-import hashlib
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
@@ -16,46 +17,55 @@ from twitter_automation_agent.models import Article
 MIN_IMAGE_BYTES = 8_000
 MIN_DIMENSION_HINT = 240
 HttpUrlAdapter = TypeAdapter(HttpUrl)
+
 STOPWORDS = {
     "about",
     "after",
     "amid",
     "and",
     "are",
-    "following",
+    "as",
+    "for",
     "from",
     "has",
     "have",
+    "how",
     "into",
     "its",
     "latest",
-    "launches",
-    "limits",
-    "model",
-    "models",
     "new",
+    "news",
+    "over",
+    "report",
+    "says",
+    "source",
     "the",
     "this",
     "under",
     "what",
     "with",
-    "world",
-    "year",
-    "years",
 }
-GENERIC_IMAGE_TERMS = [
-    "technology",
-    "tech company",
-    "artificial intelligence",
-    "semiconductor",
-    "smartphone",
-    "laptop",
-    "software",
-    "data center",
-    "robotics",
-    "cybersecurity",
-    "cloud computing",
+
+LOW_VALUE_IMAGE_TERMS = [
+    "sprite",
+    "favicon",
+    "icon",
+    "placeholder",
+    "avatar",
+    "profile_images",
+    "default",
+    "author",
+    "byline",
 ]
+
+GENERIC_BAD_SUBJECTS = {
+    "draft",
+    "source",
+    "photo",
+    "image",
+    "technology",
+    "news",
+}
 
 
 def safe_filename(value: str) -> str:
@@ -63,46 +73,8 @@ def safe_filename(value: str) -> str:
     return value[:80] or "image"
 
 
-def _looks_like_low_value_image(url: str) -> bool:
-    lowered = url.lower()
-    host = urlparse(url).netloc.lower()
-    low_value_terms = [
-        "sprite",
-        "favicon",
-        "icon",
-        "placeholder",
-        "avatar",
-        "profile_images",
-        "default",
-    ]
-    return host in {"lh3.googleusercontent.com", "encrypted-tbn0.gstatic.com"} or any(
-        term in lowered for term in low_value_terms
-    )
-
-
-def _dimension_score(url: str, width: str | None = None, height: str | None = None) -> int:
-    score = 0
-    for value in [width, height]:
-        if value and value.isdigit() and int(value) >= MIN_DIMENSION_HINT:
-            score += 2
-
-    for pattern in [r"[?&]w=(\d+)", r"[?&]width=(\d+)", r"-(\d+)x(\d+)\."]:
-        match = re.search(pattern, url)
-        if not match:
-            continue
-        dims = [int(group) for group in match.groups() if group.isdigit()]
-        if dims and max(dims) >= MIN_DIMENSION_HINT:
-            score += 2
-    return score
-
-
-def _valid_http_url(value: str | None) -> HttpUrl | None:
-    if not value:
-        return None
-    try:
-        return HttpUrlAdapter.validate_python(value)
-    except ValueError:
-        return None
+def normalize_space(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
 
 
 def _keywords(value: str) -> set[str]:
@@ -124,20 +96,76 @@ def _ordered_keywords(value: str) -> list[str]:
     return ordered
 
 
-def _capitalized_phrases(value: str) -> list[str]:
-    phrases = re.findall(
-        r"\b[A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+){0,3}\b",
-        value,
-    )
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for phrase in phrases:
-        normalized = phrase.strip()
-        if normalized.lower() in STOPWORDS or normalized in seen:
+def _valid_http_url(value: str | None) -> HttpUrl | None:
+    if not value:
+        return None
+    try:
+        return HttpUrlAdapter.validate_python(value)
+    except ValueError:
+        return None
+
+
+def _dimension_score(url: str, width: str | None = None, height: str | None = None) -> int:
+    score = 0
+    for value in [width, height]:
+        if value and value.isdigit() and int(value) >= MIN_DIMENSION_HINT:
+            score += 2
+
+    for pattern in [r"[?&]w=(\d+)", r"[?&]width=(\d+)", r"-(\d+)x(\d+)\."]:
+        match = re.search(pattern, url)
+        if not match:
             continue
-        seen.add(normalized)
-        ordered.append(normalized)
-    return ordered
+        dims = [int(group) for group in match.groups() if group.isdigit()]
+        if dims and max(dims) >= MIN_DIMENSION_HINT:
+            score += 2
+    return score
+
+
+def _host(value: str) -> str:
+    return urlparse(value).netloc.lower().removeprefix("www.")
+
+
+def _looks_like_low_value_image(url: str) -> bool:
+    lowered = url.lower()
+    host = _host(url)
+    return host in {"lh3.googleusercontent.com", "encrypted-tbn0.gstatic.com"} or any(
+        term in lowered for term in LOW_VALUE_IMAGE_TERMS
+    )
+
+
+def _source_terms(article: Article) -> set[str]:
+    raw = f"{article.source} {article.publisher or ''}"
+    return {token for token in _keywords(raw) if len(token) > 3}
+
+
+def _captioned_context(article: Article, draft_text: str | None) -> str:
+    return " ".join(
+        part
+        for part in [draft_text or "", article.title, article.summary or ""]
+        if part
+    )
+
+
+def _is_bad_subject(subject: str, article: Article) -> bool:
+    value = normalize_space(subject.strip(" .,;:-"))
+    lowered = value.lower()
+    if not value or len(value) < 2 or len(value) > 80:
+        return True
+    if lowered in GENERIC_BAD_SUBJECTS or lowered in STOPWORDS:
+        return True
+    if lowered.isdigit():
+        return True
+
+    source_terms = _source_terms(article)
+    subject_tokens = _keywords(value)
+    if subject_tokens and subject_tokens.issubset(source_terms):
+        return True
+    return False
+
+
+def _subject_key(subject: str) -> str:
+    tokens = _ordered_keywords(subject)
+    return " ".join(tokens[:4]) if tokens else subject.lower()
 
 
 class ImageFinder:
@@ -145,28 +173,41 @@ class ImageFinder:
         self.settings = settings
         self.timeout = timeout
 
-    def find(self, article: Article) -> str | None:
-        search_query = self._image_query(article)
-        candidate_urls = self._article_page_candidates(article)
+    def find(self, article: Article, draft_text: str | None = None) -> str | None:
+        candidates = self.find_candidates(article, draft_text=draft_text, limit=1)
+        return candidates[0] if candidates else None
 
-        for page_url in candidate_urls:
-            image_candidate = self._extract_best_article_image(page_url, article)
-            if image_candidate and image_candidate[0] >= 8:
-                return image_candidate[1]
+    def find_candidates(
+        self,
+        article: Article,
+        draft_text: str | None = None,
+        limit: int = 8,
+    ) -> list[str]:
+        self._ensure_resolved_article_url(article)
+        subjects = self._visual_subjects(article, draft_text)
+        query_groups = self._image_query_groups(subjects, article, draft_text)
+        subject_keywords = self._subject_keywords(subjects, query_groups)
 
-        if self.settings.serpapi_api_key:
-            serp_image = self._serpapi_image(search_query)
-            if serp_image:
-                return serp_image
+        buckets: list[list[str]] = []
+        for _, queries in query_groups:
+            bucket: list[str] = []
+            for query in queries:
+                if self.settings.serpapi_api_key:
+                    bucket.extend(self._serpapi_images(query, article, subject_keywords, limit=2))
+                bucket.extend(self._duckduckgo_images(query, article, subject_keywords, limit=3))
+                if len(bucket) >= 3:
+                    break
+            buckets.append(bucket)
 
-        scraped_image = self._duckduckgo_image(search_query, _keywords(search_query))
-        if scraped_image:
-            return scraped_image
+        candidates = self._round_robin_candidates(buckets, limit)
+
+        if len(candidates) < limit:
+            candidates.extend(self._article_image_candidates(article, subject_keywords))
 
         if article.image_url and not _looks_like_low_value_image(str(article.image_url)):
-            return str(article.image_url)
+            candidates.append(str(article.image_url))
 
-        return None
+        return self._dedupe_urls(candidates, limit)
 
     def download(self, image_url: str, output_dir: Path) -> Path | None:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -197,18 +238,233 @@ class ImageFinder:
         path.write_bytes(response.content)
         return path
 
-    def _article_page_candidates(self, article: Article) -> list[str]:
+    def _visual_subjects(self, article: Article, draft_text: str | None) -> list[str]:
+        llm_subjects = self._llm_visual_subjects(article, draft_text)
+        subjects = [subject for subject in llm_subjects if not _is_bad_subject(subject, article)]
+        if subjects:
+            return self._dedupe_subjects(subjects)[:12]
+        return self._fallback_subjects(article, draft_text)[:12]
+
+    def _llm_visual_subjects(self, article: Article, draft_text: str | None) -> list[str]:
+        provider = self.settings.llm_provider.lower().strip()
+        prompt = self._visual_subject_prompt(article, draft_text)
+        if provider == "ollama":
+            raw = self._ollama_visual_subjects(prompt)
+        elif provider in {"huggingface", "hf"}:
+            raw = self._huggingface_visual_subjects(prompt)
+        else:
+            raw = None
+        return self._parse_visual_subjects(raw)
+
+    def _visual_subject_prompt(self, article: Article, draft_text: str | None) -> str:
+        return f"""You choose diverse image search subjects for a news tweet.
+Return JSON only: {{"subjects": ["..."]}}
+
+Goal:
+Create 8 to 12 short image-search subjects that give a human multiple visual choices for the same tweet.
+
+Rules:
+- Use the article facts, but expand named entities into widely known representative visuals.
+- For companies, include possible logos, products, and well-known current leaders when strongly associated.
+- For countries, include possible flags, major public figures, public buildings, or national symbols when strongly associated.
+- For products or technologies, include concrete product/category visuals.
+- For government entities, include buildings, seals, or official symbols.
+- Make subjects diverse; do not return many variations of the same object.
+- Do not include news publisher names.
+- Do not invent events, accusations, quotes, or facts.
+- Keep each subject under 6 words and search-query friendly.
+
+Draft tweet: {draft_text or "none"}
+Article title: {article.title}
+Article summary: {article.summary or "none"}
+Publisher/source to avoid: {article.source}
+"""
+
+    def _ollama_visual_subjects(self, prompt: str) -> str | None:
+        try:
+            response = httpx.post(
+                f"{self.settings.ollama_base_url.rstrip('/')}/api/generate",
+                json={
+                    "model": self.settings.ollama_model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "format": "json",
+                    "options": {"temperature": 0.35, "num_predict": 260},
+                },
+                timeout=self.timeout,
+                trust_env=False,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+        return response.json().get("response")
+
+    def _huggingface_visual_subjects(self, prompt: str) -> str | None:
+        if not self.settings.huggingface_api_token:
+            return None
+        try:
+            response = httpx.post(
+                f"https://api-inference.huggingface.co/models/{self.settings.huggingface_model}",
+                headers={"Authorization": f"Bearer {self.settings.huggingface_api_token}"},
+                json={
+                    "inputs": f"<s>[INST] {prompt} [/INST]",
+                    "parameters": {
+                        "max_new_tokens": 260,
+                        "temperature": 0.35,
+                        "return_full_text": False,
+                    },
+                },
+                timeout=self.timeout,
+                trust_env=False,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+
+        data = response.json()
+        if isinstance(data, list) and data:
+            return data[0].get("generated_text")
+        if isinstance(data, dict):
+            return data.get("generated_text")
+        return None
+
+    def _parse_visual_subjects(self, raw: str | None) -> list[str]:
+        if not raw:
+            return []
+        text = raw.strip()
+        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if match:
+            text = match.group(0)
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            subjects = re.findall(r'"([^"\n]{2,80})"', raw)
+        else:
+            values = data.get("subjects") if isinstance(data, dict) else data
+            subjects = values if isinstance(values, list) else []
+
+        clean: list[str] = []
+        seen: set[str] = set()
+        for subject in subjects:
+            value = normalize_space(str(subject).strip(" .,;:-"))
+            key = value.lower()
+            if not value or key in seen or len(value) > 80:
+                continue
+            seen.add(key)
+            clean.append(value)
+        return clean[:12]
+
+    def _fallback_subjects(self, article: Article, draft_text: str | None) -> list[str]:
+        context = _captioned_context(article, draft_text).replace("U.S.", "US").replace("U.K.", "UK")
+        subjects: list[str] = []
+        phrase_pattern = r"\b(?:[A-Z][A-Za-z0-9+.-]{1,}|[A-Z]{2,})(?:\s+(?:[A-Z][A-Za-z0-9+.-]{1,}|[A-Z]{2,})){0,3}\b"
+        for match in re.finditer(phrase_pattern, context):
+            phrase = normalize_space(match.group(0).strip(" .,;:!?-"))
+            if not _is_bad_subject(phrase, article):
+                subjects.append(phrase)
+
+        for keyword in _ordered_keywords(context)[:8]:
+            if keyword not in _source_terms(article):
+                subjects.append(keyword)
+
+        return self._dedupe_subjects(subjects)
+
+    def _dedupe_subjects(self, subjects: list[str]) -> list[str]:
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for subject in subjects:
+            value = normalize_space(subject)
+            key = value.lower()
+            if not value or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(value)
+        return deduped
+
+    def _image_query_groups(
+        self,
+        subjects: list[str],
+        article: Article,
+        draft_text: str | None,
+    ) -> list[tuple[str, list[str]]]:
+        groups: list[tuple[str, list[str]]] = []
+        for subject in subjects:
+            groups.append((_subject_key(subject), self._queries_for_subject(subject)))
+
+        fallback_terms = _ordered_keywords(_captioned_context(article, draft_text))[:5]
+        if fallback_terms:
+            groups.append(("fallback", [" ".join([*fallback_terms, "image"])]))
+
+        deduped_groups: list[tuple[str, list[str]]] = []
+        seen_groups: set[str] = set()
+        for key, queries in groups:
+            clean_queries = self._dedupe_queries(queries)
+            if not clean_queries or key in seen_groups:
+                continue
+            seen_groups.add(key)
+            deduped_groups.append((key, clean_queries[:3]))
+        return deduped_groups[:12]
+
+    def _queries_for_subject(self, subject: str) -> list[str]:
+        lowered = subject.lower()
+        if any(marker in lowered for marker in ["logo", "flag", "seal"]):
+            return [subject, f"{subject} image"]
+        if any(marker in lowered for marker in ["portrait", "ceo", "founder", "president", "minister", "leader"]):
+            return [subject, f"{subject} photo"]
+        if any(marker in lowered for marker in ["building", "headquarters", "factory"]):
+            return [subject, f"{subject} photo"]
+        return [subject, f"{subject} photo", f"{subject} image"]
+
+    def _subject_keywords(self, subjects: list[str], query_groups: list[tuple[str, list[str]]]) -> set[str]:
+        keywords: set[str] = set()
+        for subject in subjects:
+            keywords.update(_keywords(subject))
+        for _, queries in query_groups:
+            for query in queries:
+                keywords.update(_keywords(query))
+        return keywords
+
+    def _round_robin_candidates(self, buckets: list[list[str]], limit: int) -> list[str]:
         candidates: list[str] = []
-        for raw_url in [article.resolved_url, article.url, article.publisher_url]:
-            if raw_url and str(raw_url) not in candidates:
-                candidates.append(str(raw_url))
-
-        resolved = self._resolve_article_url(str(article.url))
-        if resolved and resolved not in candidates:
-            article.resolved_url = _valid_http_url(resolved)
-            candidates.insert(0, resolved)
-
+        max_len = max((len(bucket) for bucket in buckets), default=0)
+        for index in range(max_len):
+            for bucket in buckets:
+                if index < len(bucket):
+                    candidates.append(bucket[index])
+                    if len(candidates) >= limit:
+                        return candidates
         return candidates
+
+    def _dedupe_urls(self, candidates: list[str], limit: int) -> list[str]:
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for url in candidates:
+            if url in seen or not self._is_usable_image_url(url):
+                continue
+            seen.add(url)
+            deduped.append(url)
+            if len(deduped) >= limit:
+                break
+        return deduped
+
+    def _dedupe_queries(self, queries: list[str]) -> list[str]:
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for query in queries:
+            clean = normalize_space(query)
+            key = clean.lower()
+            if not clean or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(clean)
+        return deduped
+
+    def _ensure_resolved_article_url(self, article: Article) -> None:
+        if article.resolved_url:
+            return
+        resolved = self._resolve_article_url(str(article.url))
+        if resolved:
+            article.resolved_url = _valid_http_url(resolved)
 
     def _resolve_article_url(self, url: str) -> str | None:
         try:
@@ -241,7 +497,26 @@ class ImageFinder:
                 return href
         return None
 
-    def _extract_best_article_image(self, article_url: str, article: Article) -> tuple[int, str] | None:
+    def _article_image_candidates(
+        self,
+        article: Article,
+        subject_keywords: set[str],
+    ) -> list[str]:
+        candidates: list[tuple[int, str]] = []
+        for raw_url in [article.resolved_url, article.url, article.publisher_url]:
+            if not raw_url:
+                continue
+            candidates.extend(self._extract_article_images(str(raw_url), article, subject_keywords))
+
+        ranked = sorted(candidates, key=lambda item: item[0], reverse=True)
+        return [url for score, url in ranked if score >= 8]
+
+    def _extract_article_images(
+        self,
+        article_url: str,
+        article: Article,
+        subject_keywords: set[str],
+    ) -> list[tuple[int, str]]:
         try:
             response = httpx.get(
                 article_url,
@@ -252,11 +527,10 @@ class ImageFinder:
             )
             response.raise_for_status()
         except httpx.HTTPError:
-            return None
+            return []
 
         soup = BeautifulSoup(response.text, "html.parser")
         candidates: list[tuple[int, str]] = []
-        article_keywords = _keywords(f"{article.title} {article.source} {article.publisher or ''}")
 
         for selector in [
             ("property", "og:image"),
@@ -267,8 +541,9 @@ class ImageFinder:
             tag = soup.find("meta", attrs={selector[0]: selector[1]})
             if tag and tag.get("content"):
                 url = urljoin(article_url, str(tag["content"]))
-                content_score = self._content_match_score(url, "", article_keywords)
-                candidates.append((12 + _dimension_score(url) + content_score, url))
+                score = 2 + _dimension_score(url) + self._content_match_score(url, "", subject_keywords)
+                if not self._is_source_only_image(url, "", article, subject_keywords):
+                    candidates.append((score, url))
 
         for image in soup.find_all("img"):
             raw_src = image.get("src") or image.get("data-src") or image.get("data-lazy-src")
@@ -279,47 +554,38 @@ class ImageFinder:
                 continue
 
             url = urljoin(article_url, str(raw_src))
+            alt = str(image.get("alt") or "")
             score = _dimension_score(url, image.get("width"), image.get("height"))
-            alt = str(image.get("alt") or "").lower()
-            score += self._content_match_score(url, alt, article_keywords)
+            score += self._content_match_score(url, alt, subject_keywords)
             if image.find_parent("article"):
-                score += 3
-            candidates.append((score, url))
+                score += 2
+            if not self._is_source_only_image(url, alt, article, subject_keywords):
+                candidates.append((score, url))
 
-        ranked = sorted(candidates, key=lambda item: item[0], reverse=True)
-        for score, url in ranked:
-            if score >= 4 and self._is_usable_image_url(url):
-                return score, url
-        return None
+        return [(score, url) for score, url in candidates if self._is_usable_image_url(url)]
 
-    def _content_match_score(self, image_url: str, alt: str, article_keywords: set[str]) -> int:
-        haystack = f"{image_url} {alt}".lower()
+    def _content_match_score(self, image_url: str, descriptor: str, keywords: set[str]) -> int:
+        haystack = f"{image_url} {descriptor}".lower()
         score = 0
-        for keyword in article_keywords:
+        for keyword in keywords:
             if keyword in haystack:
-                score += 3
-
+                score += 3 if len(keyword) > 3 else 1
         return score
 
-    def _image_query(self, article: Article) -> str:
-        keyword_text = f"{article.title} {article.summary or ''} {article.source}"
-        entities = _capitalized_phrases(article.title)
-        keywords = _ordered_keywords(keyword_text)
-        terms: list[str] = []
-        for term in [*entities, *keywords]:
-            if term.lower() not in {item.lower() for item in terms}:
-                terms.append(term)
-            if len(terms) >= 6:
-                break
-
-        if not terms:
-            return "technology news"
-
-        generic_hint = next(
-            (term for term in GENERIC_IMAGE_TERMS if any(part in keyword_text.lower() for part in term.split())),
-            "technology news",
-        )
-        return " ".join([*terms, generic_hint, "photo logo image"])
+    def _is_source_only_image(
+        self,
+        image_url: str,
+        descriptor: str,
+        article: Article,
+        subject_keywords: set[str],
+    ) -> bool:
+        haystack = f"{_host(image_url)} {urlparse(image_url).path} {descriptor}".lower()
+        source_terms = _source_terms(article)
+        has_source = any(term in haystack for term in source_terms)
+        has_subject = any(keyword in haystack for keyword in subject_keywords if len(keyword) > 2)
+        if has_source and not has_subject:
+            return True
+        return has_source and "logo" in haystack and not has_subject
 
     def _largest_srcset_url(self, srcset: str) -> str | None:
         best_url: str | None = None
@@ -345,7 +611,13 @@ class ImageFinder:
         suffix = Path(parsed.path).suffix.lower()
         return suffix in {"", ".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
-    def _serpapi_image(self, query: str) -> str | None:
+    def _serpapi_images(
+        self,
+        query: str,
+        article: Article,
+        subject_keywords: set[str],
+        limit: int,
+    ) -> list[str]:
         try:
             response = httpx.get(
                 "https://serpapi.com/search.json",
@@ -360,16 +632,30 @@ class ImageFinder:
             )
             response.raise_for_status()
         except httpx.HTTPError:
-            return None
+            return []
 
         data = response.json()
+        ranked: list[tuple[int, str]] = []
         for item in data.get("images_results", []):
             original = item.get("original")
-            if original and self._is_usable_image_url(original):
-                return original
-        return None
+            if not original or not self._is_usable_image_url(original):
+                continue
+            descriptor = f"{item.get('title') or ''} {item.get('source') or ''}"
+            if self._is_source_only_image(original, descriptor, article, subject_keywords):
+                continue
+            score = self._content_match_score(original, descriptor, subject_keywords)
+            ranked.append((score, original))
 
-    def _duckduckgo_image(self, query: str, keywords: set[str]) -> str | None:
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        return [url for _, url in ranked[:limit]]
+
+    def _duckduckgo_images(
+        self,
+        query: str,
+        article: Article,
+        subject_keywords: set[str],
+        limit: int,
+    ) -> list[str]:
         try:
             response = httpx.get(
                 "https://duckduckgo.com/",
@@ -380,11 +666,11 @@ class ImageFinder:
             )
             response.raise_for_status()
         except httpx.HTTPError:
-            return None
+            return []
 
         match = re.search(r"vqd=['\"]([^'\"]+)['\"]", response.text)
         if not match:
-            return None
+            return []
 
         try:
             image_response = httpx.get(
@@ -405,16 +691,26 @@ class ImageFinder:
             )
             image_response.raise_for_status()
         except httpx.HTTPError:
-            return None
+            return []
 
+        ranked: list[tuple[int, str]] = []
         data = image_response.json()
         for item in data.get("results", []):
             image = item.get("image")
-            width = str(item.get("width") or "")
-            height = str(item.get("height") or "")
-            title = str(item.get("title") or "")
             if not image or not self._is_usable_image_url(image):
                 continue
-            if _dimension_score(image, width, height) > 0:
-                return image
-        return None
+
+            width = str(item.get("width") or "")
+            height = str(item.get("height") or "")
+            descriptor = f"{item.get('title') or ''} {item.get('source') or ''} {item.get('url') or ''}"
+            if self._is_source_only_image(image, descriptor, article, subject_keywords):
+                continue
+
+            score = _dimension_score(image, width, height)
+            score += self._content_match_score(image, descriptor, subject_keywords)
+            if score <= 0:
+                score = 1
+            ranked.append((score, image))
+
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        return [url for _, url in ranked[:limit]]

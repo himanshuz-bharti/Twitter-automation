@@ -35,13 +35,20 @@ def display_text(value: object) -> str:
     return text.encode("cp1252", errors="replace").decode("cp1252")
 
 
+def image_status(item: object) -> str:
+    suggestions = getattr(item.draft, "image_suggestions", [])
+    if suggestions:
+        return f"{len(suggestions)} image(s)"
+    return item.draft.image_path or "missing"
+
+
 def add_result_rows(table: Table, drafts: list, fallback_status: str) -> None:
     for index, item in enumerate(drafts, start=1):
         table.add_row(
             str(index),
             display_text(item.article.source),
             display_text(item.draft.text),
-            item.draft.image_path or "missing",
+            image_status(item),
             item.post_id or fallback_status,
         )
 

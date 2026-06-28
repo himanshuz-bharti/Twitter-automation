@@ -13,7 +13,7 @@ from pydantic import HttpUrl, TypeAdapter
 from twitter_automation_agent.config import Settings
 from twitter_automation_agent.drafter import TweetDrafter
 from twitter_automation_agent.images import ImageFinder
-from twitter_automation_agent.models import BatchPipelineResult, DraftItem, DraftStyle
+from twitter_automation_agent.models import BatchPipelineResult, DraftItem, DraftStyle, ImageSuggestion
 from twitter_automation_agent.news import NewsCollector
 from twitter_automation_agent.publisher import XPublisher
 from twitter_automation_agent.telegram import TelegramSender
@@ -68,12 +68,21 @@ class Pipeline:
         drafts: list[DraftItem] = []
         for article in selected_articles:
             draft = self.drafter.draft(article, style)
-            image_url = self.images.find(article)
-            if image_url:
-                draft.image_url = HttpUrlAdapter.validate_python(image_url)
+            image_candidates = self.images.find_candidates(article, draft_text=draft.text, limit=12)
+            for image_url in image_candidates:
+                if len(draft.image_suggestions) >= 5:
+                    break
                 image_path = self.images.download(image_url, output_dir / "images")
-                if image_path:
-                    draft.image_path = str(image_path)
+                if not image_path:
+                    continue
+                suggestion = ImageSuggestion(
+                    url=HttpUrlAdapter.validate_python(image_url),
+                    path=str(image_path),
+                )
+                draft.image_suggestions.append(suggestion)
+                if not draft.image_path:
+                    draft.image_url = suggestion.url
+                    draft.image_path = suggestion.path
 
             item = DraftItem(article=article, draft=draft)
             if post:

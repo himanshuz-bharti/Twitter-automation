@@ -26,12 +26,18 @@ class Article(BaseModel):
     score: float = 0.0
 
 
+class ImageSuggestion(BaseModel):
+    url: HttpUrl
+    path: str
+
+
 class TweetDraft(BaseModel):
     text: str = Field(..., max_length=280)
     style: DraftStyle
     article: Article
     image_url: HttpUrl | None = None
     image_path: str | None = None
+    image_suggestions: list[ImageSuggestion] = Field(default_factory=list)
     rationale: str | None = None
 
 

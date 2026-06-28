@@ -34,19 +34,21 @@ class TelegramSender:
             raise RuntimeError("Telegram delivery requires a downloaded image for every draft.")
 
         label = f"Draft {index}/{total}" if index and total else "Tweet draft"
-        caption = self._caption(item, label)
-        image_path = Path(item.draft.image_path)
+        message_id = self.send_text(self._draft_message(item, label))
+        image_paths = [suggestion.path for suggestion in item.draft.image_suggestions]
+        if not image_paths and item.draft.image_path:
+            image_paths = [item.draft.image_path]
 
-        with image_path.open("rb") as image_file:
-            response = self._request(
-                "sendPhoto",
-                data={"chat_id": self.settings.telegram_chat_id, "caption": caption},
-                files={"photo": (image_path.name, image_file)},
+        total_images = min(len(image_paths), 5)
+        for image_index, image_path in enumerate(image_paths[:5], start=1):
+            image_id = self._send_photo(
+                Path(image_path),
+                caption=f"{label} - Image {image_index}/{total_images}",
             )
+            if image_index == 1:
+                message_id = image_id
 
-        result = response.json().get("result", {})
-        message_id = result.get("message_id")
-        return str(message_id) if message_id is not None else "sent"
+        return message_id
 
     def send_text(self, text: str) -> str:
         if not self.settings.can_send_to_telegram:
@@ -63,22 +65,37 @@ class TelegramSender:
         message_id = result.get("message_id")
         return str(message_id) if message_id is not None else "sent"
 
-    def _caption(self, item: DraftItem, label: str) -> str:
+    def _send_photo(self, image_path: Path, caption: str) -> str:
+        with image_path.open("rb") as image_file:
+            response = self._request(
+                "sendPhoto",
+                data={"chat_id": self.settings.telegram_chat_id, "caption": caption},
+                files={"photo": (image_path.name, image_file)},
+            )
+        result = response.json().get("result", {})
+        message_id = result.get("message_id")
+        return str(message_id) if message_id is not None else "sent"
+
+    def _draft_message(self, item: DraftItem, label: str) -> str:
         source_url = str(item.article.resolved_url or item.article.url)
+        image_count = len(item.draft.image_suggestions) or (1 if item.draft.image_path else 0)
         parts = [
             label,
             "",
             item.draft.text,
             "",
+            f"Images: {min(image_count, 5)} suggestions attached below",
             f"Source: {item.article.source}",
             source_url,
         ]
-        caption = "\n".join(parts)
-        if len(caption) <= 1024:
-            return caption
+        return self._fit_message("\n".join(parts), item, label)
 
-        suffix = f"\n\nSource: {item.article.source}\n{source_url}"
-        budget = 1024 - len(label) - len("\n\n") - len(suffix) - 3
+    def _fit_message(self, text: str, item: DraftItem, label: str) -> str:
+        if len(text) <= 4096:
+            return text
+        source_url = str(item.article.resolved_url or item.article.url)
+        suffix = f"\n\nImages: 5 suggestions attached below\nSource: {item.article.source}\n{source_url}"
+        budget = 4096 - len(label) - len("\n\n") - len(suffix) - 3
         shortened_text = item.draft.text[: max(40, budget)].rsplit(" ", 1)[0].rstrip()
         return f"{label}\n\n{shortened_text}...{suffix}"
 

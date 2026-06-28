@@ -62,13 +62,13 @@ Summary: {article.summary or "none"}"""
 def fallback_draft(article: Article, style: DraftStyle) -> str:
     title = article.title.rstrip(".")
     if style == DraftStyle.neutral:
-        text = f"{title}. Source: {article.source}"
+        text = title
     elif style == DraftStyle.sharp:
-        text = f"{title}. Watch the access rules, not just the launch headline. Source: {article.source}"
+        text = f"{title}. Watch the access rules, not just the launch headline."
     elif style == DraftStyle.spicy:
-        text = f"{title}. The headline is loud, but the access restrictions are the real fight. Source: {article.source}"
+        text = f"{title}. The headline is loud, but the access restrictions are the real fight."
     else:
-        text = f"{title}. AI insiders will argue over the rollout more than the model names. Source: {article.source}"
+        text = f"{title}. AI insiders will argue over the rollout more than the model names."
     return _trim_to_tweet(text)
 
 
