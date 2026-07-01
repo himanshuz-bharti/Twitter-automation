@@ -13,6 +13,24 @@ class TelegramSender:
         self.settings = settings
         self.timeout = timeout
 
+    def delete_webhook(self, drop_pending_updates: bool = False) -> None:
+        self._request(
+            "deleteWebhook",
+            json={"drop_pending_updates": drop_pending_updates},
+        )
+
+    def get_updates(self, offset: int | None = None, timeout: int = 30) -> list[dict]:
+        payload: dict[str, object] = {
+            "timeout": timeout,
+            "allowed_updates": ["message"],
+        }
+        if offset is not None:
+            payload["offset"] = offset
+
+        data = self._request("getUpdates", json=payload).json()
+        updates = data.get("result", [])
+        return updates if isinstance(updates, list) else []
+
     def verify_credentials(self) -> tuple[str | None, str | None]:
         if not self.settings.can_send_to_telegram:
             raise RuntimeError("Telegram credentials are not fully configured.")
@@ -27,13 +45,19 @@ class TelegramSender:
         chat_id = str(chat.get("id")) if chat.get("id") is not None else chat_label
         return bot_username, chat_id
 
-    def send_draft(self, item: DraftItem, index: int | None = None, total: int | None = None) -> str:
+    def send_draft(
+        self,
+        item: DraftItem,
+        index: int | None = None,
+        total: int | None = None,
+        chat_id: str | None = None,
+    ) -> str:
         if not self.settings.can_send_to_telegram:
             raise RuntimeError("Telegram credentials are not fully configured.")
         if not item.draft.image_path:
             raise RuntimeError("Telegram delivery requires a downloaded image for every draft.")
 
-        message_id = self.send_text(item.draft.text)
+        message_id = self.send_text(item.draft.text, chat_id=chat_id)
         image_paths = [suggestion.path for suggestion in item.draft.image_suggestions]
         if not image_paths and item.draft.image_path:
             image_paths = [item.draft.image_path]
@@ -43,17 +67,18 @@ class TelegramSender:
             self._send_photo(
                 Path(image_path),
                 caption=f"Image {image_index}/{total_images}",
+                chat_id=chat_id,
             )
 
         return message_id
 
-    def send_text(self, text: str) -> str:
+    def send_text(self, text: str, chat_id: str | None = None) -> str:
         if not self.settings.can_send_to_telegram:
             raise RuntimeError("Telegram credentials are not fully configured.")
         response = self._request(
             "sendMessage",
             json={
-                "chat_id": self.settings.telegram_chat_id,
+                "chat_id": chat_id or self.settings.telegram_chat_id,
                 "text": text,
                 "disable_web_page_preview": True,
             },
@@ -62,17 +87,16 @@ class TelegramSender:
         message_id = result.get("message_id")
         return str(message_id) if message_id is not None else "sent"
 
-    def _send_photo(self, image_path: Path, caption: str) -> str:
+    def _send_photo(self, image_path: Path, caption: str, chat_id: str | None = None) -> str:
         with image_path.open("rb") as image_file:
             response = self._request(
                 "sendPhoto",
-                data={"chat_id": self.settings.telegram_chat_id, "caption": caption},
+                data={"chat_id": chat_id or self.settings.telegram_chat_id, "caption": caption},
                 files={"photo": (image_path.name, image_file)},
             )
         result = response.json().get("result", {})
         message_id = result.get("message_id")
         return str(message_id) if message_id is not None else "sent"
-
 
     def _request(self, method: str, **kwargs: object) -> httpx.Response:
         token = self.settings.telegram_bot_token

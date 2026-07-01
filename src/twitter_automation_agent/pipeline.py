@@ -60,9 +60,14 @@ class Pipeline:
         selected_articles = fresh_articles[:count]
 
         if not selected_articles:
+            if articles:
+                raise RuntimeError(
+                    f"No fresh recent articles found for: {target}. "
+                    "Use --include-seen to allow articles already generated before."
+                )
             raise RuntimeError(
-                f"No fresh recent articles found for: {target}. "
-                "Use --include-seen to allow articles already generated before."
+                f"No recent articles found for: {target}. Try a broader spelling, "
+                "a more famous related name, or increase NEWS_LOOKBACK_HOURS."
             )
 
         drafts: list[DraftItem] = []
@@ -165,6 +170,7 @@ class Pipeline:
         count: int = 10,
         skip_history: bool = True,
         dry_run: bool = False,
+        chat_id: str | None = None,
     ) -> BatchPipelineResult:
         result = self.run(
             topic=topic,
@@ -187,7 +193,12 @@ class Pipeline:
                 item.posted = False
                 item.post_id = "telegram-dry-run"
             else:
-                item.post_id = self.telegram.send_draft(item, len(sent_items), count)
+                item.post_id = self.telegram.send_draft(
+                    item,
+                    len(sent_items),
+                    count,
+                    chat_id=chat_id,
+                )
                 item.posted = True
                 self._append_history(output_dir, [item], "sent")
 

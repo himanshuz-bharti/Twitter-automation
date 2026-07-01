@@ -148,16 +148,43 @@ def _dedupe_values(values: list[str]) -> list[str]:
     return deduped
 
 
+def _spaced_camel_case(value: str) -> str:
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value)
+    return normalize_text(spaced)
+
+
+def _topic_variants(topic: str | None) -> list[str]:
+    if not topic:
+        return []
+
+    clean_topic = normalize_text(topic)
+    compact_topic = re.sub(r"\s+", "", clean_topic)
+    variants = [clean_topic]
+    if compact_topic and compact_topic != clean_topic:
+        variants.append(compact_topic)
+
+    spaced_camel = _spaced_camel_case(clean_topic)
+    if spaced_camel != clean_topic:
+        variants.append(spaced_camel)
+
+    spaced_compact = _spaced_camel_case(compact_topic)
+    if spaced_compact and spaced_compact != compact_topic:
+        variants.append(spaced_compact)
+
+    return _dedupe_values(variants)
+
+
 def _topic_terms(topic: str | None) -> list[str]:
     if not topic:
         return []
 
     terms: list[str] = []
-    for token in re.findall(r"[A-Za-z0-9]+", topic):
-        lowered = token.lower()
-        if lowered in TOPIC_STOPWORDS or len(lowered) < 2:
-            continue
-        terms.append(lowered)
+    for variant in _topic_variants(topic):
+        for token in re.findall(r"[A-Za-z0-9]+", variant):
+            lowered = token.lower()
+            if lowered in TOPIC_STOPWORDS or len(lowered) < 2:
+                continue
+            terms.append(lowered)
     return _dedupe_values(terms)
 
 
@@ -166,17 +193,19 @@ def _has_token(haystack: str, token: str) -> bool:
 
 
 def _topic_queries(topic: str, lookback_hours: int) -> list[str]:
-    clean_topic = normalize_text(topic)
     when_filter = _google_when_filter(lookback_hours)
-    queries = [
-        f"{clean_topic} {when_filter}",
-        f"{clean_topic} news {when_filter}",
-        f"latest {clean_topic} {when_filter}",
-    ]
-    if " " in clean_topic:
-        queries.insert(1, f'"{clean_topic}" {when_filter}')
+    queries: list[str] = []
+    for clean_topic in _topic_variants(topic):
+        queries.extend(
+            [
+                f"{clean_topic} {when_filter}",
+                f"{clean_topic} news {when_filter}",
+                f"latest {clean_topic} {when_filter}",
+            ]
+        )
+        if " " in clean_topic:
+            queries.insert(0, f'"{clean_topic}" {when_filter}')
     return _dedupe_values(queries)
-
 
 def _entry_datetime(entry: feedparser.FeedParserDict) -> datetime | None:
     for key in ("published", "updated", "created"):
@@ -306,7 +335,7 @@ def article_relevance_score(article: Article, topic: str | None, cluster_size: i
     score = 0.0
 
     if topic:
-        normalized_topic = normalize_text(topic).lower()
+        topic_variants = [variant.lower() for variant in _topic_variants(topic)]
         topic_terms = _topic_terms(topic)
         matched_topic_terms = sum(1 for term in topic_terms if _has_token(haystack, term))
         score += matched_topic_terms * 4
@@ -318,7 +347,7 @@ def article_relevance_score(article: Article, topic: str | None, cluster_size: i
         elif len(topic_terms) > 1:
             score -= 2
 
-        if normalized_topic and normalized_topic in haystack:
+        if any(variant and variant in haystack for variant in topic_variants):
             score += 10
 
     engagement_terms = [
@@ -400,11 +429,11 @@ def is_technology_article(article: Article, topic: str | None = None) -> bool:
 def is_topic_article(article: Article, topic: str) -> bool:
     story = _story_haystack(article)
     source = _source_haystack(article)
-    normalized_topic = normalize_text(topic).lower()
+    topic_variants = [variant.lower() for variant in _topic_variants(topic)]
     topic_terms = _topic_terms(topic)
     if not topic_terms:
         return True
-    if normalized_topic and normalized_topic in story:
+    if any(variant and variant in story for variant in topic_variants):
         return True
     if any(_has_token(story, term) for term in topic_terms):
         return True

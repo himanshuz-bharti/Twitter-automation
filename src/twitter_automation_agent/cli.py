@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 
+from twitter_automation_agent.bot import TelegramCommandBot
 from twitter_automation_agent.config import get_settings
 from twitter_automation_agent.models import DraftStyle
 from twitter_automation_agent.pipeline import Pipeline
@@ -202,6 +203,49 @@ def telegram_batch(
     add_result_rows(table, result.drafts, "not sent")
     console.print(table)
     console.print(f"[bold]Saved:[/bold] {output_dir}")
+
+
+@app.command("bot")
+def telegram_bot(
+    output_dir: Path = typer.Option(Path("outputs"), help="Directory for batch/history files."),
+    default_count: int = typer.Option(
+        3,
+        min=1,
+        max=10,
+        help="Draft count when a command omits count.",
+    ),
+    max_count: int = typer.Option(
+        10,
+        min=1,
+        max=50,
+        help="Maximum drafts allowed per bot request.",
+    ),
+    poll_timeout: int = typer.Option(
+        30,
+        min=5,
+        max=60,
+        help="Telegram long-poll timeout in seconds.",
+    ),
+    drop_pending_updates: bool = typer.Option(
+        False,
+        help="Ignore queued Telegram messages on startup.",
+    ),
+) -> None:
+    """Listen for Telegram commands like /topic Microsoft 3."""
+    load_dotenv()
+    settings = get_settings()
+    if not settings.can_send_to_telegram:
+        raise typer.BadParameter("Telegram credentials are incomplete.")
+
+    TelegramCommandBot(
+        settings=settings,
+        output_dir=output_dir,
+        default_count=default_count,
+        max_count=max_count,
+        poll_timeout=poll_timeout,
+        drop_pending_updates=drop_pending_updates,
+        console=console,
+    ).listen()
 
 
 @app.command("x-check")
