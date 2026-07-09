@@ -51,6 +51,7 @@ class Pipeline:
         history = self._load_history(output_dir) if skip_history else self._empty_history()
         target = topic or "trending tech news"
 
+        print(f"[DEBUG] Collecting news for {target}...")
         articles = self.news.collect(
             topic=topic,
             lookback_hours=self.settings.news_lookback_hours,
@@ -71,8 +72,12 @@ class Pipeline:
             )
 
         drafts: list[DraftItem] = []
+        has_posted = False
+        has_sent = False
         for article in selected_articles:
+            print(f"[DEBUG] Drafting tweet for article: {article.title}")
             draft = self.drafter.draft(article, style)
+            print(f"[DEBUG] Finding image candidates for draft...")
             image_candidates = self.images.find_candidates(article, draft_text=draft.text, limit=12)
             for image_url in image_candidates:
                 if len(draft.image_suggestions) >= 3:
@@ -90,9 +95,20 @@ class Pipeline:
                     draft.image_path = suggestion.path
 
             item = DraftItem(article=article, draft=draft)
-            if post:
+            
+            if self.settings.can_send_to_telegram and not has_sent:
+                print(f"[DEBUG] Sending to Telegram...")
+                try:
+                    self.telegram.send_draft(item, 1, 1, chat_id=None)
+                    has_sent = True
+                except Exception as e:
+                    print(f"[DEBUG] Failed to send to Telegram: {e}")
+
+            if post and not has_posted:
+                print(f"[DEBUG] Attempting to post to X...")
                 item.post_id = self.publisher.post(draft.text, draft.image_path)
                 item.posted = True
+                has_posted = True
             drafts.append(item)
 
         result = BatchPipelineResult(
@@ -118,6 +134,7 @@ class Pipeline:
         skip_history: bool = True,
         dry_run: bool = False,
     ) -> BatchPipelineResult:
+        posts = 1  # Force single post per user requirement
         result = self.run(
             topic=topic,
             style=style,

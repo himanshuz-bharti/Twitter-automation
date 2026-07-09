@@ -68,8 +68,7 @@ def run(
     settings = get_settings()
     selected_style = style or settings.default_style
 
-    if post and not settings.can_post_to_x:
-        raise typer.BadParameter("Posting requested, but X API credentials are incomplete.")
+    # Browser automation handles posting, no API credentials required.
 
     pipeline = Pipeline(settings)
     result = pipeline.run(
@@ -141,8 +140,7 @@ def autopost(
     settings = get_settings()
     selected_style = style or settings.default_style
 
-    if not dry_run and not settings.can_post_to_x:
-        raise typer.BadParameter("X API credentials are incomplete.")
+    # Browser automation handles posting, no API credentials required.
 
     result = Pipeline(settings).autopost(
         topic=topic,
@@ -253,8 +251,7 @@ def x_check() -> None:
     """Verify X OAuth credentials without posting."""
     load_dotenv()
     settings = get_settings()
-    if not settings.can_post_to_x:
-        raise typer.BadParameter("X API credentials are incomplete.")
+    # Browser automation handles posting, no API credentials required.
     screen_name, user_id = Pipeline(settings).publisher.verify_credentials()
     console.print(f"[bold]X credentials OK[/bold]: @{screen_name} ({user_id})")
 

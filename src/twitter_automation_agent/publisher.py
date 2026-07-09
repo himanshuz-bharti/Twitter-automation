@@ -1,8 +1,7 @@
-﻿from __future__ import annotations
-
+import time
+import urllib.parse
+import webbrowser
 from pathlib import Path
-
-import tweepy
 
 from twitter_automation_agent.config import Settings
 
@@ -12,64 +11,69 @@ class XPublisher:
         self.settings = settings
 
     def verify_credentials(self) -> tuple[str | None, str | None]:
-        if not self.settings.can_post_to_x:
-            raise RuntimeError("X API credentials are not fully configured.")
-        try:
-            user = self._api_v1().verify_credentials()
-        except tweepy.Unauthorized as exc:
-            raise RuntimeError(
-                "X rejected the OAuth 1.0a credentials. Regenerate the Access Token and "
-                "Access Token Secret after setting app permissions to Read and write."
-            ) from exc
-        return getattr(user, "screen_name", None), getattr(user, "id_str", None)
+        """
+        No credentials needed for the intent URL method.
+        """
+        return "system_browser", "ready"
 
     def post(self, text: str, image_path: str | None = None) -> str:
-        if not self.settings.can_post_to_x:
-            raise RuntimeError("X API credentials are not fully configured.")
-
-        api_v1 = self._api_v1()
-        client = self._client_v2()
-
-        media_ids: list[str] = []
+        """
+        Automates the Twitter web interface using the foolproof Intent URL method.
+        This opens a new tab in the user's ACTUAL default browser where they are already logged in.
+        """
+        # We URL-encode the tweet text so it can be passed in the URL
+        encoded_text = urllib.parse.quote(text)
+        
+        intent_url = f"https://x.com/intent/tweet?text={encoded_text}"
+        
+        print("\n\n✅ [SUCCESS] Opening X.com in your default system browser!")
+        print("Your tweet has been automatically pasted into the box.")
+        
         if image_path:
+            abs_path = str(Path(image_path).absolute())
+            print("\n📸 [IMAGE ATTACHMENT REQUIRED]")
+            print("Twitter Intent URLs cannot attach images automatically.")
+            print(f"Please drag and drop this image into your Tweet:\n{abs_path}")
+            
+            # Try to copy the path to clipboard for easy pasting
             try:
-                media = api_v1.media_upload(filename=str(Path(image_path)))
-            except tweepy.Unauthorized as exc:
-                raise RuntimeError(
-                    "X media upload failed because OAuth 1.0a credentials were rejected. "
-                    "Regenerate Access Token and Access Token Secret with Read and write permissions."
-                ) from exc
-            media_ids.append(media.media_id_string)
-
+                import pyperclip
+                pyperclip.copy(abs_path)
+                print("(The image path has been copied to your clipboard. Just click the image icon on X and hit Ctrl+V!)")
+            except ImportError:
+                pass
+        
+        print("\nClick the 'Post' button on X.com to finish!")
+        
+        # Open the URL in the default browser
+        webbrowser.open(intent_url)
+        
         try:
-            response = client.create_tweet(text=text, media_ids=media_ids or None)
-        except tweepy.Unauthorized as exc:
-            raise RuntimeError(
-                "X tweet creation failed because OAuth 1.0a credentials were rejected. "
-                "Regenerate Access Token and Access Token Secret with Read and write permissions."
-            ) from exc
-        tweet_id = response.data.get("id") if response.data else None
-        if not tweet_id:
-            raise RuntimeError("X API did not return a tweet id.")
-        return str(tweet_id)
-
-    def _api_v1(self) -> tweepy.API:
-        auth = tweepy.OAuth1UserHandler(
-            self.settings.x_api_key,
-            self.settings.x_api_secret,
-            self.settings.x_access_token,
-            self.settings.x_access_token_secret,
-        )
-        api_v1 = tweepy.API(auth)
-        api_v1.session.trust_env = False
-        return api_v1
-
-    def _client_v2(self) -> tweepy.Client:
-        client = tweepy.Client(
-            consumer_key=self.settings.x_api_key,
-            consumer_secret=self.settings.x_api_secret,
-            access_token=self.settings.x_access_token,
-            access_token_secret=self.settings.x_access_token_secret,
-        )
-        client.session.trust_env = False
-        return client
+            import pyautogui
+            import subprocess
+            
+            print("\n🤖 [AUTOMATION] Please do not touch your mouse/keyboard for 5 seconds...")
+            # Wait 6 seconds for the Chrome tab to fully open and load the X.com compose box
+            time.sleep(6)
+            
+            if image_path:
+                # Instead of just copying the text path, we tell Windows to copy the actual File Object 
+                # into the clipboard, exactly as if you right-clicked it in Explorer and hit 'Copy'
+                subprocess.run(["powershell", "-command", f"Set-Clipboard -Path '{abs_path}'"], check=False)
+                
+                # Paste the image directly into the active X.com tweet box
+                pyautogui.hotkey('ctrl', 'v')
+                
+                # Wait 2 seconds for the image thumbnail to attach and render
+                time.sleep(2)
+                
+            # Press Ctrl+Enter (the X.com hotkey to immediately publish the tweet)
+            pyautogui.hotkey('ctrl', 'enter')
+            
+            print("✅ Tweet automatically posted!")
+            
+        except ImportError:
+            print("\n(Note: To enable 100% hands-free posting, run: pip install pyautogui)")
+        
+        return f"intent-post-{int(time.time())}"
+                

@@ -54,8 +54,6 @@ class TelegramSender:
     ) -> str:
         if not self.settings.can_send_to_telegram:
             raise RuntimeError("Telegram credentials are not fully configured.")
-        if not item.draft.image_path:
-            raise RuntimeError("Telegram delivery requires a downloaded image for every draft.")
 
         message_id = self.send_text(item.draft.text, chat_id=chat_id)
         image_paths = [suggestion.path for suggestion in item.draft.image_suggestions]

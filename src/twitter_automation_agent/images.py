@@ -169,9 +169,10 @@ def _subject_key(subject: str) -> str:
 
 
 class ImageFinder:
-    def __init__(self, settings: Settings, timeout: float = 20.0) -> None:
+    def __init__(self, settings: Settings, timeout: float = 10.0) -> None:
         self.settings = settings
         self.timeout = timeout
+        self._ddg_disabled = False
 
     def find(self, article: Article, draft_text: str | None = None) -> str | None:
         candidates = self.find_candidates(article, draft_text=draft_text, limit=1)
@@ -656,6 +657,9 @@ Publisher/source to avoid: {article.source}
         subject_keywords: set[str],
         limit: int,
     ) -> list[str]:
+        if getattr(self, "_ddg_disabled", False):
+            return []
+
         try:
             response = httpx.get(
                 "https://duckduckgo.com/",
@@ -666,6 +670,7 @@ Publisher/source to avoid: {article.source}
             )
             response.raise_for_status()
         except httpx.HTTPError:
+            self._ddg_disabled = True
             return []
 
         match = re.search(r"vqd=['\"]([^'\"]+)['\"]", response.text)
@@ -691,6 +696,7 @@ Publisher/source to avoid: {article.source}
             )
             image_response.raise_for_status()
         except httpx.HTTPError:
+            self._ddg_disabled = True
             return []
 
         ranked: list[tuple[int, str]] = []
