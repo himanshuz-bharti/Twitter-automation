@@ -190,13 +190,12 @@ The agent should not fabricate claims, impersonate people, or generate targeted 
 
 The image finder tries, in order:
 
-1. Resolve the news URL to the publisher article.
-2. Scrape publisher `og:image` and `twitter:image`.
-3. Scan article `<img>` tags and rank likely article images.
-4. Use SerpAPI Google Images fallback if `SERPAPI_API_KEY` is configured.
-5. Use DuckDuckGo image scraping fallback.
-6. Use the RSS image only as a last resort.
+1. Generate an original, abstract tech image prompt via the LLM.
+2. Render a high-quality AI image on-the-fly using the Pollinations AI generator API.
+3. Fallback to Wikipedia API for deterministic, real-world logos/portraits.
+4. Fallback to Wikimedia Commons API for supplementary file search.
+5. Use SerpAPI/DuckDuckGo Google Images fallback if configured.
 
-Image filenames include a short URL hash so two images from the same domain do not overwrite each other.
+The script selects the top **two** distinct images and copies them to the Windows clipboard simultaneously via a PowerShell `FileDropList`, attaching both to your tweet instantly!
 
 Keep credentials out of git. `.env` is ignored by this repo.

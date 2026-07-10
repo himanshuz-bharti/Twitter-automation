@@ -36,7 +36,7 @@ class TweetDraft(BaseModel):
     style: DraftStyle
     article: Article
     image_url: HttpUrl | None = None
-    image_path: str | None = None
+    image_paths: list[str] = Field(default_factory=list)
     image_suggestions: list[ImageSuggestion] = Field(default_factory=list)
     rationale: str | None = None
 

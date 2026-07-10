@@ -256,7 +256,7 @@ class TelegramCommandBot:
             )
         except Exception as exc:
             self.telegram.send_text(f"Batch failed: {exc}", chat_id=chat_id)
-            raise
+            return
 
         self.telegram.send_text(
             f"Done. Sent {len(result.drafts)} draft(s) for {topic_label}.",
@@ -282,7 +282,7 @@ class TelegramCommandBot:
             )
         except Exception as exc:
             self.telegram.send_text(f"Post failed: {exc}", chat_id=chat_id)
-            raise
+            return
 
         self.telegram.send_text(
             f"✅ Done! Successfully posted the tweet to X from your PC.",
@@ -313,7 +313,7 @@ class TelegramCommandBot:
             )
         except Exception as exc:
             self.telegram.send_text(f"Autopost failed: {exc}", chat_id=chat_id)
-            raise
+            return
 
         self.telegram.send_text(
             f"✅ Finished! Successfully posted all {command.posts} scheduled tweets to X.",

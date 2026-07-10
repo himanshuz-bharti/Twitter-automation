@@ -5,7 +5,7 @@ import json
 import mimetypes
 import re
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, quote
 
 import httpx
 from bs4 import BeautifulSoup
@@ -189,29 +189,31 @@ class ImageFinder:
         query_groups = self._image_query_groups(subjects, article, draft_text)
         subject_keywords = self._subject_keywords(subjects, query_groups)
 
+        pollinations_count = 0
         buckets: list[list[str]] = []
         for _, queries in query_groups:
             bucket: list[str] = []
             for query in queries:
+                # Generate a completely original AI image for this query
+                if pollinations_count < 2:
+                    bucket.append(self._pollinations_images(query))
+                    pollinations_count += 1
+                    
                 if self.settings.serpapi_api_key:
                     bucket.extend(self._serpapi_images(query, article, subject_keywords, limit=2))
                 bucket.extend(self._duckduckgo_images(query, article, subject_keywords, limit=3))
                 
                 # New: Wikipedia Fallback for guaranteed images of companies, people, and places
-                if not bucket:
+                if len(bucket) < 2:
                     bucket.extend(self._wikipedia_images(query, limit=1))
+                if len(bucket) < 2:
+                    bucket.extend(self._wikimedia_commons_images(query, limit=1))
                     
                 if len(bucket) >= 3:
                     break
             buckets.append(bucket)
 
         candidates = self._round_robin_candidates(buckets, limit)
-
-        if len(candidates) < limit:
-            candidates.extend(self._article_image_candidates(article, subject_keywords))
-
-        if article.image_url and not _looks_like_low_value_image(str(article.image_url)):
-            candidates.append(str(article.image_url))
 
         return self._dedupe_urls(candidates, limit)
 
@@ -245,13 +247,25 @@ class ImageFinder:
         return path
 
     def _visual_subjects(self, article: Article, draft_text: str | None) -> list[str]:
-        llm_subjects = self._llm_visual_subjects(article, draft_text)
+        llm_entities, llm_subjects = self._llm_visual_subjects(article, draft_text)
+        
+        print(f"\n[DEBUG] [Image Criteria Extraction]")
+        if llm_entities:
+            print(f"  -> Extracted Entities: {', '.join(llm_entities)}")
+        else:
+            print(f"  -> Extracted Entities: (None found)")
+            
+        if llm_subjects:
+            print(f"  -> Suggested Visual Terms: {', '.join(llm_subjects)}")
+        else:
+            print(f"  -> Suggested Visual Terms: (None generated)")
+
         subjects = [subject for subject in llm_subjects if not _is_bad_subject(subject, article)]
         if subjects:
             return self._dedupe_subjects(subjects)[:12]
         return self._fallback_subjects(article, draft_text)[:12]
 
-    def _llm_visual_subjects(self, article: Article, draft_text: str | None) -> list[str]:
+    def _llm_visual_subjects(self, article: Article, draft_text: str | None) -> tuple[list[str], list[str]]:
         provider = self.settings.llm_provider.lower().strip()
         prompt = self._visual_subject_prompt(article, draft_text)
         if provider == "ollama":
@@ -263,23 +277,45 @@ class ImageFinder:
         return self._parse_visual_subjects(raw)
 
     def _visual_subject_prompt(self, article: Article, draft_text: str | None) -> str:
-        return f"""You choose diverse image search subjects for a news tweet.
-Return JSON only: {{"subjects": ["..."]}}
+        return f"""You are an expert at image search criteria generation for a news tweet.
+Return JSON ONLY in exactly this format:
+{{
+  "extracted_entities": ["important piece of info 1", "important piece of info 2"],
+  "visual_subjects": ["suggested visual term 1", "suggested visual term 2"]
+}}
 
 Goal:
-Create 8 to 12 short image-search subjects that give a human multiple visual choices for the same tweet.
+Step 1: Extract important pieces of information from the tweet and article (e.g., name of company, places, location, monument, specific product).
+Step 2: Suggest 8 to 12 diverse relevant visual terms for those extracted entities to give a human multiple visual choices.
 
 Rules:
-- Use the article facts, but expand named entities into widely known representative visuals.
-- For companies, include possible logos, products, and well-known current leaders when strongly associated.
+- DO NOT hardcode Meta, Paris, or Zuckerberg unless they are actually in the article.
+- Use the article facts, but expand named entities into widely known representative visuals (e.g. if the entity is a company, suggest a logo or its founder; if a city, suggest a monument).
 - For countries, include possible flags, major public figures, public buildings, or national symbols when strongly associated.
 - For products or technologies, include concrete product/category visuals.
 - For government entities, include buildings, seals, or official symbols.
 - Make subjects diverse; do not return many variations of the same object.
 - Do not include news publisher names.
 - Do not invent events, accusations, quotes, or facts.
-- Keep each subject under 6 words and search-query friendly.
+- Keep each visual subject under 6 words and search-query friendly.
 
+Example Execution 1:
+Draft tweet: "Mark Zuckerberg just announced major updates for Instagram."
+Output:
+{{
+  "extracted_entities": ["Mark Zuckerberg", "Instagram"],
+  "visual_subjects": ["Mark Zuckerberg portrait photo", "Instagram app logo", "Meta headquarters building", "Social media interface screen"]
+}}
+
+Example Execution 2:
+Draft tweet: "Kylian Mbappe scored a stunning goal in Paris tonight."
+Output:
+{{
+  "extracted_entities": ["Kylian Mbappe", "Paris"],
+  "visual_subjects": ["Kylian Mbappe action shot", "Eiffel Tower", "Soccer ball on pitch", "Paris city skyline"]
+}}
+
+Now execute for the following:
 Draft tweet: {draft_text or "none"}
 Article title: {article.title}
 Article summary: {article.summary or "none"}
@@ -334,20 +370,25 @@ Publisher/source to avoid: {article.source}
             return data.get("generated_text")
         return None
 
-    def _parse_visual_subjects(self, raw: str | None) -> list[str]:
+    def _parse_visual_subjects(self, raw: str | None) -> tuple[list[str], list[str]]:
         if not raw:
-            return []
+            return [], []
         text = raw.strip()
         match = re.search(r"\{.*\}", text, flags=re.DOTALL)
         if match:
             text = match.group(0)
+            
+        extracted_entities = []
+        subjects = []
         try:
             data = json.loads(text)
+            if isinstance(data, dict):
+                entities_val = data.get("extracted_entities")
+                extracted_entities = entities_val if isinstance(entities_val, list) else []
+                subjects_val = data.get("visual_subjects")
+                subjects = subjects_val if isinstance(subjects_val, list) else []
         except json.JSONDecodeError:
             subjects = re.findall(r'"([^"\n]{2,80})"', raw)
-        else:
-            values = data.get("subjects") if isinstance(data, dict) else data
-            subjects = values if isinstance(values, list) else []
 
         clean: list[str] = []
         seen: set[str] = set()
@@ -358,7 +399,12 @@ Publisher/source to avoid: {article.source}
                 continue
             seen.add(key)
             clean.append(value)
-        return clean[:12]
+            
+        clean_entities: list[str] = []
+        for entity in extracted_entities:
+            clean_entities.append(normalize_space(str(entity).strip(" .,;:-")))
+            
+        return clean_entities, clean[:12]
 
     def _fallback_subjects(self, article: Article, draft_text: str | None) -> list[str]:
         context = _captioned_context(article, draft_text).replace("U.S.", "US").replace("U.K.", "UK")
@@ -503,72 +549,7 @@ Publisher/source to avoid: {article.source}
                 return href
         return None
 
-    def _article_image_candidates(
-        self,
-        article: Article,
-        subject_keywords: set[str],
-    ) -> list[str]:
-        candidates: list[tuple[int, str]] = []
-        for raw_url in [article.resolved_url, article.url, article.publisher_url]:
-            if not raw_url:
-                continue
-            candidates.extend(self._extract_article_images(str(raw_url), article, subject_keywords))
 
-        ranked = sorted(candidates, key=lambda item: item[0], reverse=True)
-        return [url for score, url in ranked if score >= 8]
-
-    def _extract_article_images(
-        self,
-        article_url: str,
-        article: Article,
-        subject_keywords: set[str],
-    ) -> list[tuple[int, str]]:
-        try:
-            response = httpx.get(
-                article_url,
-                follow_redirects=True,
-                timeout=self.timeout,
-                headers={"User-Agent": "Mozilla/5.0 TwitterAutomationAgent/0.1"},
-                trust_env=False,
-            )
-            response.raise_for_status()
-        except httpx.HTTPError:
-            return []
-
-        soup = BeautifulSoup(response.text, "html.parser")
-        candidates: list[tuple[int, str]] = []
-
-        for selector in [
-            ("property", "og:image"),
-            ("property", "og:image:url"),
-            ("name", "twitter:image"),
-            ("property", "twitter:image"),
-        ]:
-            tag = soup.find("meta", attrs={selector[0]: selector[1]})
-            if tag and tag.get("content"):
-                url = urljoin(article_url, str(tag["content"]))
-                score = 2 + _dimension_score(url) + self._content_match_score(url, "", subject_keywords)
-                if not self._is_source_only_image(url, "", article, subject_keywords):
-                    candidates.append((score, url))
-
-        for image in soup.find_all("img"):
-            raw_src = image.get("src") or image.get("data-src") or image.get("data-lazy-src")
-            if not raw_src:
-                srcset = image.get("srcset") or image.get("data-srcset")
-                raw_src = self._largest_srcset_url(str(srcset)) if srcset else None
-            if not raw_src:
-                continue
-
-            url = urljoin(article_url, str(raw_src))
-            alt = str(image.get("alt") or "")
-            score = _dimension_score(url, image.get("width"), image.get("height"))
-            score += self._content_match_score(url, alt, subject_keywords)
-            if image.find_parent("article"):
-                score += 2
-            if not self._is_source_only_image(url, alt, article, subject_keywords):
-                candidates.append((score, url))
-
-        return [(score, url) for score, url in candidates if self._is_usable_image_url(url)]
 
     def _content_match_score(self, image_url: str, descriptor: str, keywords: set[str]) -> int:
         haystack = f"{image_url} {descriptor}".lower()
@@ -774,5 +755,68 @@ Publisher/source to avoid: {article.source}
                     return [source]
                     
             return []
+        except Exception:
+            return []
+
+    def _pollinations_images(self, query: str) -> str:
+        # Appending a style hint helps the generator create better abstract tech images
+        prompt = f"{query} high quality tech illustration"
+        print(f"\n[DEBUG] [Pollinations AI] Generating image with exact prompt: '{prompt}'")
+        encoded = quote(prompt)
+        return f"https://image.pollinations.ai/prompt/{encoded}?nologo=true"
+
+    def _wikimedia_commons_images(self, query: str, limit: int) -> list[str]:
+        try:
+            search_resp = httpx.get(
+                "https://commons.wikimedia.org/w/api.php",
+                params={
+                    "action": "query",
+                    "list": "search",
+                    "srsearch": query,
+                    "srnamespace": 6,  # File namespace
+                    "utf8": "",
+                    "format": "json",
+                    "srlimit": limit
+                },
+                timeout=self.timeout,
+                headers={"User-Agent": "Mozilla/5.0 TwitterAutomationAgent/0.1"},
+                trust_env=False,
+            )
+            search_resp.raise_for_status()
+            
+            search_results = search_resp.json().get("query", {}).get("search", [])
+            if not search_results:
+                return []
+                
+            titles = "|".join([res.get("title") for res in search_results if res.get("title")])
+            if not titles:
+                return []
+                
+            img_resp = httpx.get(
+                "https://commons.wikimedia.org/w/api.php",
+                params={
+                    "action": "query",
+                    "titles": titles,
+                    "prop": "imageinfo",
+                    "iiprop": "url",
+                    "format": "json",
+                },
+                timeout=self.timeout,
+                headers={"User-Agent": "Mozilla/5.0 TwitterAutomationAgent/0.1"},
+                trust_env=False,
+            )
+            img_resp.raise_for_status()
+            
+            urls = []
+            pages = img_resp.json().get("query", {}).get("pages", {})
+            for page_info in pages.values():
+                imageinfo = page_info.get("imageinfo", [])
+                if imageinfo:
+                    source = imageinfo[0].get("url")
+                    if source and self._is_usable_image_url(source):
+                        urls.append(source)
+                        if len(urls) >= limit:
+                            break
+            return urls
         except Exception:
             return []

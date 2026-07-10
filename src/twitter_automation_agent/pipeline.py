@@ -90,9 +90,8 @@ class Pipeline:
                     path=str(image_path),
                 )
                 draft.image_suggestions.append(suggestion)
-                if not draft.image_path:
-                    draft.image_url = suggestion.url
-                    draft.image_path = suggestion.path
+                if len(draft.image_paths) < 2:
+                    draft.image_paths.append(suggestion.path)
 
             item = DraftItem(article=article, draft=draft)
             
@@ -106,7 +105,7 @@ class Pipeline:
 
             if post and not has_posted:
                 print(f"[DEBUG] Attempting to post to X...")
-                item.post_id = self.publisher.post(draft.text, draft.image_path)
+                item.post_id = self.publisher.post(draft.text, draft.image_paths)
                 item.posted = True
                 has_posted = True
             drafts.append(item)
@@ -151,7 +150,7 @@ class Pipeline:
             if delivered_count >= posts:
                 break
 
-            if not item.draft.image_path:
+            if not item.draft.image_paths:
                 continue
 
             attempted_items.append(item)
@@ -159,7 +158,7 @@ class Pipeline:
                 item.posted = False
                 item.post_id = "dry-run"
             else:
-                item.post_id = self.publisher.post(item.draft.text, item.draft.image_path)
+                item.post_id = self.publisher.post(item.draft.text, item.draft.image_paths)
                 item.posted = True
                 self._append_history(output_dir, [item], "posted")
 
@@ -201,7 +200,7 @@ class Pipeline:
 
         sent_items: list[DraftItem] = []
         for item in result.drafts:
-            if not item.draft.image_path:
+            if not item.draft.image_paths:
                 continue
 
             sent_items.append(item)

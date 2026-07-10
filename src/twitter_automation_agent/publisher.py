@@ -16,7 +16,7 @@ class XPublisher:
         """
         return "system_browser", "ready"
 
-    def post(self, text: str, image_path: str | None = None) -> str:
+    def post(self, text: str, image_paths: list[str] | None = None) -> str:
         """
         Automates the Twitter web interface using the foolproof Intent URL method.
         This opens a new tab in the user's ACTUAL default browser where they are already logged in.
@@ -26,20 +26,20 @@ class XPublisher:
         
         intent_url = f"https://x.com/intent/tweet?text={encoded_text}"
         
-        print("\n\n✅ [SUCCESS] Opening X.com in your default system browser!")
+        print("\n\n[SUCCESS] Opening X.com in your default system browser!")
         print("Your tweet has been automatically pasted into the box.")
         
-        if image_path:
-            abs_path = str(Path(image_path).absolute())
-            print("\n📸 [IMAGE ATTACHMENT REQUIRED]")
+        if image_paths:
+            abs_paths = [str(Path(p).absolute()) for p in image_paths]
+            print("\n[IMAGE ATTACHMENT REQUIRED]")
             print("Twitter Intent URLs cannot attach images automatically.")
-            print(f"Please drag and drop this image into your Tweet:\n{abs_path}")
+            print(f"Please drag and drop these images into your Tweet:\n" + "\n".join(abs_paths))
             
             # Try to copy the path to clipboard for easy pasting
             try:
                 import pyperclip
-                pyperclip.copy(abs_path)
-                print("(The image path has been copied to your clipboard. Just click the image icon on X and hit Ctrl+V!)")
+                pyperclip.copy(abs_paths[0])
+                print("(The first image path has been copied to your clipboard.)")
             except ImportError:
                 pass
         
@@ -52,19 +52,21 @@ class XPublisher:
             import pyautogui
             import subprocess
             
-            print("\n🤖 [AUTOMATION] Please do not touch your mouse/keyboard for 5 seconds...")
+            print("\n[AUTOMATION] Please do not touch your mouse/keyboard for 5 seconds...")
             # Wait 6 seconds for the Chrome tab to fully open and load the X.com compose box
             time.sleep(6)
             
-            if image_path:
+            if image_paths:
                 # Copy the actual image data (pixels) into the Windows clipboard
                 # This ensures it pastes correctly as an image attachment in X.com
                 ps_command = (
                     "Add-Type -AssemblyName System.Windows.Forms; "
                     "$sc = New-Object System.Collections.Specialized.StringCollection; "
-                    f"$sc.Add('{abs_path}'); "
-                    "[System.Windows.Forms.Clipboard]::SetFileDropList($sc)"
                 )
+                for p in abs_paths:
+                    ps_command += f"$sc.Add('{p}'); "
+                ps_command += "[System.Windows.Forms.Clipboard]::SetFileDropList($sc)"
+                
                 subprocess.run(["powershell", "-Sta", "-command", ps_command], check=False)
                 
                 # Paste the image directly into the active X.com tweet box
@@ -77,7 +79,7 @@ class XPublisher:
             # Press Ctrl+Enter (the X.com hotkey to immediately publish the tweet)
             pyautogui.hotkey('ctrl', 'enter')
             
-            print("✅ Tweet automatically posted!")
+            print("Tweet automatically posted!")
             
         except ImportError:
             print("\n(Note: To enable 100% hands-free posting, run: pip install pyautogui)")
