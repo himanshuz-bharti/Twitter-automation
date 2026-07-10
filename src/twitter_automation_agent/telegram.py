@@ -60,8 +60,8 @@ class TelegramSender:
         if not image_paths and item.draft.image_paths:
             image_paths = item.draft.image_paths
 
-        total_images = min(len(image_paths), 2)
-        for image_index, image_path in enumerate(image_paths[:2], start=1):
+        total_images = len(image_paths)
+        for image_index, image_path in enumerate(image_paths, start=1):
             self._send_photo(
                 Path(image_path),
                 caption=f"Image {image_index}/{total_images}",

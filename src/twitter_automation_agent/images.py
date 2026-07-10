@@ -4,6 +4,7 @@ import hashlib
 import json
 import mimetypes
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urljoin, urlparse, quote
 
@@ -13,6 +14,11 @@ from pydantic import HttpUrl, TypeAdapter
 
 from twitter_automation_agent.config import Settings
 from twitter_automation_agent.models import Article
+
+@dataclass
+class ImageTarget:
+    wikipedia_entity: str
+    pollinations_prompt: str
 
 MIN_IMAGE_BYTES = 8_000
 MIN_DIMENSION_HINT = 240
@@ -185,37 +191,56 @@ class ImageFinder:
         limit: int = 8,
     ) -> list[str]:
         self._ensure_resolved_article_url(article)
-        subjects = self._visual_subjects(article, draft_text)
-        query_groups = self._image_query_groups(subjects, article, draft_text)
-        subject_keywords = self._subject_keywords(subjects, query_groups)
+        targets = self._visual_subjects(article, draft_text)
+        
+        # We need a set of keywords for scoring algorithms in DDG/SerpAPI
+        subject_keywords: set[str] = set()
+        for target in targets:
+            subject_keywords.update(_keywords(target.wikipedia_entity))
+            subject_keywords.update(_keywords(target.pollinations_prompt))
 
-        pollinations_count = 0
-        buckets: list[list[str]] = []
-        for _, queries in query_groups:
+        internet_buckets: list[list[str]] = []
+        successful_targets: set[str] = set()
+        
+        for target in targets:
             bucket: list[str] = []
-            for query in queries:
-                # Generate a completely original AI image for this query
-                if pollinations_count < 2:
-                    bucket.append(self._pollinations_images(query))
-                    pollinations_count += 1
-                    
-                if self.settings.serpapi_api_key:
-                    bucket.extend(self._serpapi_images(query, article, subject_keywords, limit=2))
-                bucket.extend(self._duckduckgo_images(query, article, subject_keywords, limit=3))
+            query = target.wikipedia_entity
+            
+            if self.settings.serpapi_api_key:
+                bucket.extend(self._serpapi_images(query, article, subject_keywords, limit=1))
+            if not bucket:
+                bucket.extend(self._duckduckgo_images(query, article, subject_keywords, limit=1))
+            
+            # Wikipedia Fallback for guaranteed images of companies, people, and places
+            if not bucket:
+                bucket.extend(self._wikipedia_images(query, limit=1))
+            if not bucket:
+                bucket.extend(self._wikimedia_commons_images(query, limit=1))
                 
-                # New: Wikipedia Fallback for guaranteed images of companies, people, and places
-                if len(bucket) < 2:
-                    bucket.extend(self._wikipedia_images(query, limit=1))
-                if len(bucket) < 2:
-                    bucket.extend(self._wikimedia_commons_images(query, limit=1))
-                    
-                if len(bucket) >= 3:
-                    break
-            buckets.append(bucket)
+            if bucket:
+                internet_buckets.append(bucket[:1])
+                successful_targets.add(target.wikipedia_entity)
 
-        candidates = self._round_robin_candidates(buckets, limit)
+        candidates = self._round_robin_candidates(internet_buckets, limit)
+        candidates = self._dedupe_urls(candidates, limit)
+        
+        # Append Pollinations AI URLs ONLY for targets that failed to find an internet image
+        # This prevents duplicate concepts (one real photo + one AI photo of the same thing)
+        fallback_pollinations: list[str] = []
+        for target in targets:
+            pollinations_url = self._pollinations_images(target.pollinations_prompt)
+            if target.wikipedia_entity not in successful_targets:
+                candidates.append(pollinations_url)
+            else:
+                fallback_pollinations.append(pollinations_url)
+                
+        # If we have very few candidates, we can add the remaining AI images at the very end
+        if len(candidates) < 3:
+            for url in fallback_pollinations:
+                if url not in candidates:
+                    candidates.append(url)
 
-        return self._dedupe_urls(candidates, limit)
+        return candidates
 
     def download(self, image_url: str, output_dir: Path) -> Path | None:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -246,26 +271,19 @@ class ImageFinder:
         path.write_bytes(response.content)
         return path
 
-    def _visual_subjects(self, article: Article, draft_text: str | None) -> list[str]:
-        llm_entities, llm_subjects = self._llm_visual_subjects(article, draft_text)
+    def _visual_subjects(self, article: Article, draft_text: str | None) -> list[ImageTarget]:
+        targets = self._llm_visual_subjects(article, draft_text)
         
         print(f"\n[DEBUG] [Image Criteria Extraction]")
-        if llm_entities:
-            print(f"  -> Extracted Entities: {', '.join(llm_entities)}")
+        if targets:
+            for i, target in enumerate(targets, start=1):
+                print(f"  [{i}] Wikipedia Entity: '{target.wikipedia_entity}' | Pollinations: '{target.pollinations_prompt}'")
         else:
             print(f"  -> Extracted Entities: (None found)")
             
-        if llm_subjects:
-            print(f"  -> Suggested Visual Terms: {', '.join(llm_subjects)}")
-        else:
-            print(f"  -> Suggested Visual Terms: (None generated)")
+        return targets
 
-        subjects = [subject for subject in llm_subjects if not _is_bad_subject(subject, article)]
-        if subjects:
-            return self._dedupe_subjects(subjects)[:12]
-        return self._fallback_subjects(article, draft_text)[:12]
-
-    def _llm_visual_subjects(self, article: Article, draft_text: str | None) -> tuple[list[str], list[str]]:
+    def _llm_visual_subjects(self, article: Article, draft_text: str | None) -> list[ImageTarget]:
         provider = self.settings.llm_provider.lower().strip()
         prompt = self._visual_subject_prompt(article, draft_text)
         if provider == "ollama":
@@ -280,39 +298,33 @@ class ImageFinder:
         return f"""You are an expert at image search criteria generation for a news tweet.
 Return JSON ONLY in exactly this format:
 {{
-  "extracted_entities": ["important piece of info 1", "important piece of info 2"],
-  "visual_subjects": ["suggested visual term 1", "suggested visual term 2"]
+  "image_targets": [
+    {{
+      "reasoning": "...",
+      "wikipedia_entity": "Exact proper noun",
+      "pollinations_prompt": "Rich descriptive scene"
+    }}
+  ]
 }}
 
-Goal:
-Step 1: Extract important pieces of information from the tweet and article (e.g., name of company, places, location, monument, specific product).
-Step 2: Suggest 8 to 12 diverse relevant visual terms for those extracted entities to give a human multiple visual choices.
+Goal: Provide 5 diverse visual targets for this tweet.
+For each target, provide:
+1. wikipedia_entity: A STRICT, widely-known proper noun (e.g. "Microsoft", "Satya Nadella", "Xbox", "Flag of the United States"). DO NOT append words like "logo", "building", or "photo". This must match an exact Wikipedia article title.
+2. pollinations_prompt: A highly descriptive visual scene for an AI generator.
 
 Rules:
-- DO NOT hardcode Meta, Paris, or Zuckerberg unless they are actually in the article.
-- Use the article facts, but expand named entities into widely known representative visuals (e.g. if the entity is a company, suggest a logo or its founder; if a city, suggest a monument).
-- For countries, include possible flags, major public figures, public buildings, or national symbols when strongly associated.
-- For products or technologies, include concrete product/category visuals.
-- For government entities, include buildings, seals, or official symbols.
-- Make subjects diverse; do not return many variations of the same object.
+- Make targets diverse. (e.g., Target 1: The company. Target 2: The CEO. Target 3: A related product. Target 4: Abstract concept).
 - Do not include news publisher names.
-- Do not invent events, accusations, quotes, or facts.
-- Keep each visual subject under 6 words and search-query friendly.
 
 Example Execution 1:
 Draft tweet: "Mark Zuckerberg just announced major updates for Instagram."
 Output:
 {{
-  "extracted_entities": ["Mark Zuckerberg", "Instagram"],
-  "visual_subjects": ["Mark Zuckerberg portrait photo", "Instagram app logo", "Meta headquarters building", "Social media interface screen"]
-}}
-
-Example Execution 2:
-Draft tweet: "Kylian Mbappe scored a stunning goal in Paris tonight."
-Output:
-{{
-  "extracted_entities": ["Kylian Mbappe", "Paris"],
-  "visual_subjects": ["Kylian Mbappe action shot", "Eiffel Tower", "Soccer ball on pitch", "Paris city skyline"]
+  "image_targets": [
+    {{"reasoning": "We need the exact company to find the logo", "wikipedia_entity": "Instagram", "pollinations_prompt": "A glowing high-tech Instagram app logo"}},
+    {{"reasoning": "The CEO is mentioned", "wikipedia_entity": "Mark Zuckerberg", "pollinations_prompt": "Portrait illustration of Mark Zuckerberg speaking at a futuristic conference"}},
+    {{"reasoning": "Abstract representation of the product", "wikipedia_entity": "Social media", "pollinations_prompt": "Abstract futuristic social media interface screen"}}
+  ]
 }}
 
 Now execute for the following:
@@ -370,41 +382,32 @@ Publisher/source to avoid: {article.source}
             return data.get("generated_text")
         return None
 
-    def _parse_visual_subjects(self, raw: str | None) -> tuple[list[str], list[str]]:
+    def _parse_visual_subjects(self, raw: str | None) -> list[ImageTarget]:
         if not raw:
-            return [], []
+            return []
         text = raw.strip()
         match = re.search(r"\{.*\}", text, flags=re.DOTALL)
         if match:
             text = match.group(0)
             
-        extracted_entities = []
-        subjects = []
+        targets: list[ImageTarget] = []
         try:
             data = json.loads(text)
             if isinstance(data, dict):
-                entities_val = data.get("extracted_entities")
-                extracted_entities = entities_val if isinstance(entities_val, list) else []
-                subjects_val = data.get("visual_subjects")
-                subjects = subjects_val if isinstance(subjects_val, list) else []
+                items = data.get("image_targets", [])
+                for item in items:
+                    if isinstance(item, dict):
+                        w_ent = item.get("wikipedia_entity", "")
+                        p_prompt = item.get("pollinations_prompt", "")
+                        if w_ent and p_prompt:
+                            targets.append(ImageTarget(
+                                wikipedia_entity=normalize_space(str(w_ent).strip(" .,;:-")),
+                                pollinations_prompt=normalize_space(str(p_prompt).strip(" .,;:-"))
+                            ))
         except json.JSONDecodeError:
-            subjects = re.findall(r'"([^"\n]{2,80})"', raw)
+            pass
 
-        clean: list[str] = []
-        seen: set[str] = set()
-        for subject in subjects:
-            value = normalize_space(str(subject).strip(" .,;:-"))
-            key = value.lower()
-            if not value or key in seen or len(value) > 80:
-                continue
-            seen.add(key)
-            clean.append(value)
-            
-        clean_entities: list[str] = []
-        for entity in extracted_entities:
-            clean_entities.append(normalize_space(str(entity).strip(" .,;:-")))
-            
-        return clean_entities, clean[:12]
+        return targets[:5]
 
     def _fallback_subjects(self, article: Article, draft_text: str | None) -> list[str]:
         context = _captioned_context(article, draft_text).replace("U.S.", "US").replace("U.K.", "UK")
@@ -433,48 +436,7 @@ Publisher/source to avoid: {article.source}
             deduped.append(value)
         return deduped
 
-    def _image_query_groups(
-        self,
-        subjects: list[str],
-        article: Article,
-        draft_text: str | None,
-    ) -> list[tuple[str, list[str]]]:
-        groups: list[tuple[str, list[str]]] = []
-        for subject in subjects:
-            groups.append((_subject_key(subject), self._queries_for_subject(subject)))
 
-        fallback_terms = _ordered_keywords(_captioned_context(article, draft_text))[:5]
-        if fallback_terms:
-            groups.append(("fallback", [" ".join([*fallback_terms, "image"])]))
-
-        deduped_groups: list[tuple[str, list[str]]] = []
-        seen_groups: set[str] = set()
-        for key, queries in groups:
-            clean_queries = self._dedupe_queries(queries)
-            if not clean_queries or key in seen_groups:
-                continue
-            seen_groups.add(key)
-            deduped_groups.append((key, clean_queries[:3]))
-        return deduped_groups[:12]
-
-    def _queries_for_subject(self, subject: str) -> list[str]:
-        lowered = subject.lower()
-        if any(marker in lowered for marker in ["logo", "flag", "seal"]):
-            return [subject, f"{subject} image"]
-        if any(marker in lowered for marker in ["portrait", "ceo", "founder", "president", "minister", "leader"]):
-            return [subject, f"{subject} photo"]
-        if any(marker in lowered for marker in ["building", "headquarters", "factory"]):
-            return [subject, f"{subject} photo"]
-        return [subject, f"{subject} photo", f"{subject} image"]
-
-    def _subject_keywords(self, subjects: list[str], query_groups: list[tuple[str, list[str]]]) -> set[str]:
-        keywords: set[str] = set()
-        for subject in subjects:
-            keywords.update(_keywords(subject))
-        for _, queries in query_groups:
-            for query in queries:
-                keywords.update(_keywords(query))
-        return keywords
 
     def _round_robin_candidates(self, buckets: list[list[str]], limit: int) -> list[str]:
         candidates: list[str] = []
@@ -761,7 +723,6 @@ Publisher/source to avoid: {article.source}
     def _pollinations_images(self, query: str) -> str:
         # Appending a style hint helps the generator create better abstract tech images
         prompt = f"{query} high quality tech illustration"
-        print(f"\n[DEBUG] [Pollinations AI] Generating image with exact prompt: '{prompt}'")
         encoded = quote(prompt)
         return f"https://image.pollinations.ai/prompt/{encoded}?nologo=true"
 

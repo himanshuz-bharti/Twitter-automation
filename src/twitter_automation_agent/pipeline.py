@@ -80,8 +80,15 @@ class Pipeline:
             print(f"[DEBUG] Finding image candidates for draft...")
             image_candidates = self.images.find_candidates(article, draft_text=draft.text, limit=12)
             for image_url in image_candidates:
-                if len(draft.image_suggestions) >= 3:
+                if len(draft.image_suggestions) >= 5:
                     break
+                    
+                if len(draft.image_suggestions) >= 2 and "image.pollinations.ai" in image_url:
+                    continue # Skip AI generation if we successfully fetched 2 internet images
+                    
+                if "image.pollinations.ai" in image_url:
+                    print(f"\n[DEBUG] [Pollinations AI] Generating and downloading AI image...")
+                    
                 image_path = self.images.download(image_url, output_dir / "images")
                 if not image_path:
                     continue
@@ -108,6 +115,7 @@ class Pipeline:
                 item.post_id = self.publisher.post(draft.text, draft.image_paths)
                 item.posted = True
                 has_posted = True
+                self._cleanup_post_artifacts(item)
             drafts.append(item)
 
         result = BatchPipelineResult(
@@ -117,7 +125,9 @@ class Pipeline:
             drafts=drafts,
         )
 
-        self._write_result(result, output_dir)
+        if not post:
+            self._write_result(result, output_dir)
+            
         if record_history:
             self._append_history(output_dir, drafts, "posted" if post else "drafted")
         return result
@@ -161,6 +171,7 @@ class Pipeline:
                 item.post_id = self.publisher.post(item.draft.text, item.draft.image_paths)
                 item.posted = True
                 self._append_history(output_dir, [item], "posted")
+                self._cleanup_post_artifacts(item)
 
             delivered_count += 1
             if delivered_count < posts:
@@ -173,8 +184,8 @@ class Pipeline:
                 f"Only {delivered_count} image-backed draft(s) were available for {target}; "
                 f"requested {posts}. Try a larger --queue-size or run again later."
             )
-
-        self._write_result(result, output_dir)
+        if dry_run:
+            self._write_result(result, output_dir)
         return result
 
     def send_telegram_batch(
@@ -318,3 +329,11 @@ class Pipeline:
             encoding="utf-8",
         )
         return path
+
+    def _cleanup_post_artifacts(self, item: DraftItem) -> None:
+        """Deletes the downloaded image files associated with a draft."""
+        for suggestion in item.draft.image_suggestions:
+            try:
+                Path(suggestion.path).unlink(missing_ok=True)
+            except OSError:
+                pass
