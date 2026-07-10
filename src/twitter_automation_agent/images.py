@@ -196,6 +196,11 @@ class ImageFinder:
                 if self.settings.serpapi_api_key:
                     bucket.extend(self._serpapi_images(query, article, subject_keywords, limit=2))
                 bucket.extend(self._duckduckgo_images(query, article, subject_keywords, limit=3))
+                
+                # New: Wikipedia Fallback for guaranteed images of companies, people, and places
+                if not bucket:
+                    bucket.extend(self._wikipedia_images(query, limit=1))
+                    
                 if len(bucket) >= 3:
                     break
             buckets.append(bucket)
@@ -720,3 +725,54 @@ Publisher/source to avoid: {article.source}
 
         ranked.sort(key=lambda item: item[0], reverse=True)
         return [url for _, url in ranked[:limit]]
+
+    def _wikipedia_images(self, query: str, limit: int) -> list[str]:
+        try:
+            search_resp = httpx.get(
+                "https://en.wikipedia.org/w/api.php",
+                params={
+                    "action": "query",
+                    "list": "search",
+                    "srsearch": query,
+                    "utf8": "",
+                    "format": "json",
+                    "srlimit": 1
+                },
+                timeout=self.timeout,
+                headers={"User-Agent": "Mozilla/5.0 TwitterAutomationAgent/0.1"},
+                trust_env=False,
+            )
+            search_resp.raise_for_status()
+            
+            search_results = search_resp.json().get("query", {}).get("search", [])
+            if not search_results:
+                return []
+                
+            title = search_results[0].get("title")
+            if not title:
+                return []
+                
+            img_resp = httpx.get(
+                "https://en.wikipedia.org/w/api.php",
+                params={
+                    "action": "query",
+                    "prop": "pageimages",
+                    "format": "json",
+                    "piprop": "original",
+                    "titles": title
+                },
+                timeout=self.timeout,
+                headers={"User-Agent": "Mozilla/5.0 TwitterAutomationAgent/0.1"},
+                trust_env=False,
+            )
+            img_resp.raise_for_status()
+            
+            pages = img_resp.json().get("query", {}).get("pages", {})
+            for page_info in pages.values():
+                source = page_info.get("original", {}).get("source")
+                if source and self._is_usable_image_url(source):
+                    return [source]
+                    
+            return []
+        except Exception:
+            return []

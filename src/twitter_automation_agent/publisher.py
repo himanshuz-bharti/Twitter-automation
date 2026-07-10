@@ -57,15 +57,21 @@ class XPublisher:
             time.sleep(6)
             
             if image_path:
-                # Instead of just copying the text path, we tell Windows to copy the actual File Object 
-                # into the clipboard, exactly as if you right-clicked it in Explorer and hit 'Copy'
-                subprocess.run(["powershell", "-command", f"Set-Clipboard -Path '{abs_path}'"], check=False)
+                # Copy the actual image data (pixels) into the Windows clipboard
+                # This ensures it pastes correctly as an image attachment in X.com
+                ps_command = (
+                    "Add-Type -AssemblyName System.Windows.Forms; "
+                    "Add-Type -AssemblyName System.Drawing; "
+                    f"try {{ [System.Windows.Forms.Clipboard]::SetImage([System.Drawing.Image]::FromFile('{abs_path}')) }} catch {{ }}"
+                )
+                subprocess.run(["powershell", "-Sta", "-command", ps_command], check=False)
                 
                 # Paste the image directly into the active X.com tweet box
                 pyautogui.hotkey('ctrl', 'v')
                 
-                # Wait 2 seconds for the image thumbnail to attach and render
-                time.sleep(2)
+                # Wait 7 seconds for the image thumbnail to fully upload, attach, and render
+                # (If you hit post too early, X.com complains that the media is still attaching)
+                time.sleep(7)
                 
             # Press Ctrl+Enter (the X.com hotkey to immediately publish the tweet)
             pyautogui.hotkey('ctrl', 'enter')

@@ -134,7 +134,6 @@ class Pipeline:
         skip_history: bool = True,
         dry_run: bool = False,
     ) -> BatchPipelineResult:
-        posts = 1  # Force single post per user requirement
         result = self.run(
             topic=topic,
             style=style,
