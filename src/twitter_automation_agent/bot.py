@@ -15,12 +15,14 @@ from twitter_automation_agent.telegram import TelegramSender
 HELP_TEXT = """Commands:
 /topic <topic> [count] - send drafts for a topic
 /trending [count] - send trending tech drafts
+/post <topic> [--posts <num>] [--interval <mins>] - instantly post or schedule multiple tweets
 /status - check that the bot is alive
 /help - show this message
 
 Examples:
 /topic Microsoft 3
-/topic "AI models" 5
+/post "AI models"
+/post "Nvidia" --posts 3 --interval 60
 /trending 3
 """.strip()
 
@@ -32,6 +34,8 @@ class BotCommand:
     count: int = 3
     style: DraftStyle | None = None
     include_seen: bool = False
+    posts: int = 1
+    interval_minutes: float = 90.0
 
 
 class TelegramCommandBot:
@@ -130,7 +134,7 @@ class TelegramCommandBot:
             raise ValueError(HELP_TEXT)
 
         raw_name = parts[0].split("@", 1)[0].lower()
-        args, count, include_seen = self._parse_options(parts[1:])
+        args, count, include_seen, posts, interval = self._parse_options(parts[1:])
 
         if raw_name in {"/help", "help", "/start", "start"}:
             return BotCommand(name="help")
@@ -162,13 +166,32 @@ class TelegramCommandBot:
                 count=count or self.default_count,
                 include_seen=include_seen,
             )
+        if raw_name in {"/post", "post"}:
+            if not args:
+                raise ValueError("Usage: /post <topic> [--posts <num>] [--interval <minutes>]")
+            topic = " ".join(args).strip()
+            
+            # Route internally based on whether they requested multiple scheduled posts
+            internal_command_name = "autopost" if posts > 1 else "post"
+            
+            return BotCommand(
+                name=internal_command_name,
+                topic=topic,
+                count=count or (self.default_count if posts > 1 else 1),
+                include_seen=include_seen,
+                posts=posts,
+                interval_minutes=interval,
+            )
 
         raise ValueError(HELP_TEXT)
 
-    def _parse_options(self, args: list[str]) -> tuple[list[str], int | None, bool]:
+    def _parse_options(self, args: list[str]) -> tuple[list[str], int | None, bool, int, float]:
         topic_parts: list[str] = []
         count: int | None = None
         include_seen = False
+        posts = 1
+        interval = 90.0
+        
         index = 0
         while index < len(args):
             arg = args[index]
@@ -180,10 +203,23 @@ class TelegramCommandBot:
                 if index >= len(args):
                     raise ValueError("Usage: --count <number>")
                 count = self._parse_count(args[index])
+            elif lowered in {"--posts", "-p"}:
+                index += 1
+                if index >= len(args):
+                    raise ValueError("Usage: --posts <number>")
+                posts = self._parse_count(args[index])
+            elif lowered in {"--interval", "-i"}:
+                index += 1
+                if index >= len(args):
+                    raise ValueError("Usage: --interval <minutes>")
+                try:
+                    interval = float(args[index])
+                except ValueError:
+                    raise ValueError("Interval must be a number.")
             else:
                 topic_parts.append(arg)
             index += 1
-        return topic_parts, count, include_seen
+        return topic_parts, count, include_seen, posts, interval
     def _parse_count(self, raw: str) -> int:
         try:
             count = int(raw)
@@ -194,6 +230,13 @@ class TelegramCommandBot:
         return count
 
     def _run_batch(self, command: BotCommand, chat_id: str) -> None:
+        if command.name == "post":
+            self._run_post(command, chat_id)
+            return
+        if command.name == "autopost":
+            self._run_autopost(command, chat_id)
+            return
+
         topic_label = command.topic or "trending tech news"
         style = command.style or self.settings.default_style
         self.telegram.send_text(
@@ -217,5 +260,62 @@ class TelegramCommandBot:
 
         self.telegram.send_text(
             f"Done. Sent {len(result.drafts)} draft(s) for {topic_label}.",
+            chat_id=chat_id,
+        )
+
+    def _run_post(self, command: BotCommand, chat_id: str) -> None:
+        topic_label = command.topic or "trending tech news"
+        style = command.style or self.settings.default_style
+        self.telegram.send_text(
+            f"Drafting and auto-posting 1 tweet for {topic_label} on your PC...",
+            chat_id=chat_id,
+        )
+
+        try:
+            Pipeline(self.settings).run(
+                topic=command.topic,
+                style=style,
+                output_dir=self.output_dir,
+                count=1,
+                post=True,
+                skip_history=not command.include_seen,
+            )
+        except Exception as exc:
+            self.telegram.send_text(f"Post failed: {exc}", chat_id=chat_id)
+            raise
+
+        self.telegram.send_text(
+            f"✅ Done! Successfully posted the tweet to X from your PC.",
+            chat_id=chat_id,
+        )
+
+    def _run_autopost(self, command: BotCommand, chat_id: str) -> None:
+        topic_label = command.topic or "trending tech news"
+        style = command.style or self.settings.default_style
+        
+        queue_size = command.count if command.count > command.posts else command.posts
+        
+        self.telegram.send_text(
+            f"Scheduling {command.posts} post(s) for {topic_label}, spacing them out every {command.interval_minutes} minutes. "
+            f"The bot will remain busy processing these in the background on your PC.",
+            chat_id=chat_id,
+        )
+
+        try:
+            Pipeline(self.settings).autopost(
+                topic=command.topic,
+                style=style,
+                output_dir=self.output_dir,
+                queue_size=queue_size,
+                posts=command.posts,
+                interval_minutes=command.interval_minutes,
+                skip_history=not command.include_seen,
+            )
+        except Exception as exc:
+            self.telegram.send_text(f"Autopost failed: {exc}", chat_id=chat_id)
+            raise
+
+        self.telegram.send_text(
+            f"✅ Finished! Successfully posted all {command.posts} scheduled tweets to X.",
             chat_id=chat_id,
         )

@@ -61,8 +61,9 @@ class XPublisher:
                 # This ensures it pastes correctly as an image attachment in X.com
                 ps_command = (
                     "Add-Type -AssemblyName System.Windows.Forms; "
-                    "Add-Type -AssemblyName System.Drawing; "
-                    f"try {{ [System.Windows.Forms.Clipboard]::SetImage([System.Drawing.Image]::FromFile('{abs_path}')) }} catch {{ }}"
+                    "$sc = New-Object System.Collections.Specialized.StringCollection; "
+                    f"$sc.Add('{abs_path}'); "
+                    "[System.Windows.Forms.Clipboard]::SetFileDropList($sc)"
                 )
                 subprocess.run(["powershell", "-Sta", "-command", ps_command], check=False)
                 
@@ -71,7 +72,7 @@ class XPublisher:
                 
                 # Wait 7 seconds for the image thumbnail to fully upload, attach, and render
                 # (If you hit post too early, X.com complains that the media is still attaching)
-                time.sleep(7)
+                time.sleep(5)
                 
             # Press Ctrl+Enter (the X.com hotkey to immediately publish the tweet)
             pyautogui.hotkey('ctrl', 'enter')
