@@ -3,6 +3,7 @@ from __future__ import annotations
 import shlex
 import time
 from dataclasses import dataclass
+from enum import Enum, auto
 from pathlib import Path
 
 from rich.console import Console
@@ -17,6 +18,7 @@ HELP_TEXT = """Commands:
 /trending [count] - send trending tech drafts
 /post <topic> [--posts <num>] [--interval <mins>] - instantly post or schedule multiple tweets
 /status - check that the bot is alive
+/cancel - cancel current conversation
 /help - show this message
 
 Examples:
@@ -25,6 +27,13 @@ Examples:
 /post "Nvidia" --posts 3 --interval 60
 /trending 3
 """.strip()
+
+
+class ConversationState(Enum):
+    IDLE = auto()
+    AWAITING_TOPIC = auto()
+    AWAITING_POSTS = auto()
+    AWAITING_INTERVAL = auto()
 
 
 @dataclass(frozen=True)
@@ -58,6 +67,10 @@ class TelegramCommandBot:
         self.telegram = TelegramSender(settings)
         self.console = console or Console()
         self._busy = False
+        
+        self._state = ConversationState.IDLE
+        self._pending_topic: str | None = None
+        self._pending_posts: int | None = None
 
     def listen(self) -> None:
         if not self.settings.can_send_to_telegram:
@@ -102,6 +115,17 @@ class TelegramCommandBot:
         if not text:
             return
 
+        if text.lower() in {"/cancel", "cancel"}:
+            self._state = ConversationState.IDLE
+            self._pending_topic = None
+            self._pending_posts = None
+            self.telegram.send_text("Conversation cancelled.", chat_id=chat_id)
+            return
+
+        if self._state != ConversationState.IDLE:
+            self._handle_stateful_message(text, chat_id)
+            return
+
         try:
             command = self._parse_command(text)
         except ValueError as exc:
@@ -118,6 +142,11 @@ class TelegramCommandBot:
             self.telegram.send_text("Shutting down bot...", chat_id=chat_id)
             import sys
             sys.exit(0)
+            
+        if command.name == "interactive_post":
+            self._state = ConversationState.AWAITING_TOPIC
+            self.telegram.send_text("What topic do you want to tweet about?", chat_id=chat_id)
+            return
 
         if self._busy:
             self.telegram.send_text(
@@ -131,6 +160,59 @@ class TelegramCommandBot:
             self._run_batch(command, chat_id)
         finally:
             self._busy = False
+
+    def _handle_stateful_message(self, text: str, chat_id: str) -> None:
+        if self._state == ConversationState.AWAITING_TOPIC:
+            self._pending_topic = text.strip()
+            self._state = ConversationState.AWAITING_POSTS
+            self.telegram.send_text("How many posts do you want to schedule?", chat_id=chat_id)
+            return
+            
+        if self._state == ConversationState.AWAITING_POSTS:
+            try:
+                self._pending_posts = int(text.strip())
+                if self._pending_posts < 1:
+                    raise ValueError()
+            except ValueError:
+                self.telegram.send_text("Please send a valid positive number for the post count.", chat_id=chat_id)
+                return
+                
+            self._state = ConversationState.AWAITING_INTERVAL
+            self.telegram.send_text("How many minutes between each post?", chat_id=chat_id)
+            return
+            
+        if self._state == ConversationState.AWAITING_INTERVAL:
+            try:
+                interval = int(text.strip())
+                if interval < 0:
+                    raise ValueError()
+            except ValueError:
+                self.telegram.send_text("Please send a valid non-negative number for the interval.", chat_id=chat_id)
+                return
+                
+            self._state = ConversationState.IDLE
+            self.telegram.send_text(f"Scheduling {self._pending_posts} posts about '{self._pending_topic}'...", chat_id=chat_id)
+            
+            internal_command_name = "autopost" if self._pending_posts > 1 else "post"
+            command = BotCommand(
+                name=internal_command_name,
+                topic=self._pending_topic,
+                count=max(self.default_count, self._pending_posts),
+                include_seen=False,
+                posts=self._pending_posts,
+                interval_minutes=float(interval)
+            )
+            
+            if self._busy:
+                self.telegram.send_text("A batch is already running. Please wait for it to finish before scheduling.", chat_id=chat_id)
+                return
+                
+            self._busy = True
+            try:
+                self._run_batch(command, chat_id)
+            finally:
+                self._busy = False
+            return
 
     def _parse_command(self, text: str) -> BotCommand:
         parts = shlex.split(text)
@@ -174,7 +256,8 @@ class TelegramCommandBot:
             )
         if raw_name in {"/post", "post"}:
             if not args:
-                raise ValueError("Usage: /post <topic> [--posts <num>] [--interval <minutes>]")
+                return BotCommand(name="interactive_post")
+                
             topic = " ".join(args).strip()
             
             # Route internally based on whether they requested multiple scheduled posts
