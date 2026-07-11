@@ -24,6 +24,11 @@ DEFAULT_FEEDS = [
     "https://techcrunch.com/feed/",
     "https://www.wired.com/feed/rss",
     "https://www.technologyreview.com/feed/",
+    "https://feeds.arstechnica.com/arstechnica/index",
+    "https://hnrss.org/frontpage",
+    "https://www.engadget.com/rss.xml",
+    "https://feeds.feedburner.com/venturebeat/SZYF",
+    "https://search.cnbc.com/rs/search/combinedcms/view.xml?id=19854910",
 ]
 
 TRENDING_TECH_QUERIES = [
@@ -330,6 +335,24 @@ def _fingerprint(title: str) -> str:
     return hashlib.sha1(" ".join(keywords[:12]).encode("utf-8")).hexdigest()
 
 
+def _is_similar(a1: Article, a2: Article) -> bool:
+    def get_words(a: Article) -> set[str]:
+        text = f"{a.title} {a.summary or ''}".lower()
+        text = re.sub(r"[^a-z0-9]+", " ", text)
+        return {w for w in text.split() if len(w) > 4 and w not in TOPIC_STOPWORDS}
+        
+    set1 = get_words(a1)
+    set2 = get_words(a2)
+    if not set1 or not set2:
+        return False
+        
+    intersection = set1.intersection(set2)
+    union = set1.union(set2)
+    overlap = len(intersection) / len(union) if union else 0
+    
+    return overlap > 0.35 or (len(intersection) >= 4 and overlap > 0.20)
+
+
 def article_relevance_score(article: Article, topic: str | None, cluster_size: int = 1) -> float:
     haystack = _story_haystack(article)
     score = 0.0
@@ -527,14 +550,47 @@ class NewsCollector:
         return articles
 
     def _dedupe(self, articles: list[Article]) -> tuple[list[Article], dict[str, int]]:
-        seen: set[str] = set()
         cluster_sizes: dict[str, int] = {}
         deduped: list[Article] = []
         for article in articles:
             key = _fingerprint(article.title)
-            cluster_sizes[key] = cluster_sizes.get(key, 0) + 1
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(article)
+            
+            # Check for semantic duplicate
+            is_duplicate = False
+            for d in deduped:
+                if _is_similar(article, d):
+                    is_duplicate = True
+                    cluster_key = _fingerprint(d.title)
+                    cluster_sizes[cluster_key] = cluster_sizes.get(cluster_key, 1) + 1
+                    break
+                    
+            if not is_duplicate:
+                deduped.append(article)
+                cluster_sizes[key] = 1
+                
         return deduped, cluster_sizes
+
+    def enrich_article(self, article: Article) -> None:
+        if article.summary and len(article.summary) > 50:
+            return
+            
+        try:
+            response = httpx.get(
+                article.resolved_url or article.url,
+                timeout=self.timeout,
+                follow_redirects=True,
+                headers={"User-Agent": "Mozilla/5.0 TwitterAutomationAgent/0.1"},
+                trust_env=False,
+            )
+            response.raise_for_status()
+            article.resolved_url = _valid_http_url(str(response.url))
+            
+            soup = BeautifulSoup(response.text, "html.parser")
+            paragraphs = soup.find_all("p")
+            text_blocks = [p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 40]
+            
+            if text_blocks:
+                new_summary = " ".join(text_blocks[:3])
+                article.summary = new_summary[:600] + ("..." if len(new_summary) > 600 else "")
+        except Exception as e:
+            pass

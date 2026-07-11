@@ -52,9 +52,9 @@ class XPublisher:
             import pyautogui
             import subprocess
             
-            print("\n[AUTOMATION] Please do not touch your mouse/keyboard for 5 seconds...")
-            # Wait 6 seconds for the Chrome tab to fully open and load the X.com compose box
-            time.sleep(6)
+            print("\n[AUTOMATION] Please do not touch your mouse/keyboard for 10 seconds...")
+            # Wait 10 seconds for the Chrome tab to fully open and load the X.com compose box
+            time.sleep(10)
             
             if image_paths:
                 # Copy the actual image data (pixels) into the Windows clipboard
@@ -72,9 +72,9 @@ class XPublisher:
                 # Paste the image directly into the active X.com tweet box
                 pyautogui.hotkey('ctrl', 'v')
                 
-                # Wait 7 seconds for the image thumbnail to fully upload, attach, and render
+                # Wait 8 seconds for the image thumbnail to fully upload, attach, and render
                 # (If you hit post too early, X.com complains that the media is still attaching)
-                time.sleep(5)
+                time.sleep(8)
                 
             # Press Ctrl+Enter (the X.com hotkey to immediately publish the tweet)
             pyautogui.hotkey('ctrl', 'enter')

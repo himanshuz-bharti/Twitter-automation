@@ -175,7 +175,7 @@ def _subject_key(subject: str) -> str:
 
 
 class ImageFinder:
-    def __init__(self, settings: Settings, timeout: float = 10.0) -> None:
+    def __init__(self, settings: Settings, timeout: float = 45.0) -> None:
         self.settings = settings
         self.timeout = timeout
         self._ddg_disabled = False
@@ -193,15 +193,23 @@ class ImageFinder:
         self._ensure_resolved_article_url(article)
         targets = self._visual_subjects(article, draft_text)
         
-        # We need a set of keywords for scoring algorithms in DDG/SerpAPI
+        # We only want the top 2 suggestions
+        targets = targets[:2]
+
+        candidates: list[str] = []
+        
+        # 1. Generate them using pollination (1 image for each of the top 2)
+        for target in targets:
+            pollinations_url = self._pollinations_images(target.pollinations_prompt)
+            candidates.append(pollinations_url)
+
+        # 2. Fetch from online sources (we only need 1 real image in total)
         subject_keywords: set[str] = set()
         for target in targets:
             subject_keywords.update(_keywords(target.wikipedia_entity))
             subject_keywords.update(_keywords(target.pollinations_prompt))
 
-        internet_buckets: list[list[str]] = []
-        successful_targets: set[str] = set()
-        
+        real_image = None
         for target in targets:
             bucket: list[str] = []
             query = target.wikipedia_entity
@@ -210,35 +218,17 @@ class ImageFinder:
                 bucket.extend(self._serpapi_images(query, article, subject_keywords, limit=1))
             if not bucket:
                 bucket.extend(self._duckduckgo_images(query, article, subject_keywords, limit=1))
-            
-            # Wikipedia Fallback for guaranteed images of companies, people, and places
             if not bucket:
                 bucket.extend(self._wikipedia_images(query, limit=1))
             if not bucket:
                 bucket.extend(self._wikimedia_commons_images(query, limit=1))
                 
             if bucket:
-                internet_buckets.append(bucket[:1])
-                successful_targets.add(target.wikipedia_entity)
+                real_image = bucket[0]
+                break # We just need 1 real image
 
-        candidates = self._round_robin_candidates(internet_buckets, limit)
-        candidates = self._dedupe_urls(candidates, limit)
-        
-        # Append Pollinations AI URLs ONLY for targets that failed to find an internet image
-        # This prevents duplicate concepts (one real photo + one AI photo of the same thing)
-        fallback_pollinations: list[str] = []
-        for target in targets:
-            pollinations_url = self._pollinations_images(target.pollinations_prompt)
-            if target.wikipedia_entity not in successful_targets:
-                candidates.append(pollinations_url)
-            else:
-                fallback_pollinations.append(pollinations_url)
-                
-        # If we have very few candidates, we can add the remaining AI images at the very end
-        if len(candidates) < 3:
-            for url in fallback_pollinations:
-                if url not in candidates:
-                    candidates.append(url)
+        if real_image:
+            candidates.append(real_image)
 
         return candidates
 
@@ -266,8 +256,10 @@ class ImageFinder:
         if not suffix:
             suffix = Path(urlparse(image_url).path).suffix or ".jpg"
 
+        import uuid
         image_hash = hashlib.sha1(image_url.encode("utf-8")).hexdigest()[:10]
-        path = output_dir / f"{safe_filename(urlparse(image_url).netloc)}-{image_hash}{suffix}"
+        unique_id = uuid.uuid4().hex[:6]
+        path = output_dir / f"{safe_filename(urlparse(image_url).netloc)}-{image_hash}-{unique_id}{suffix}"
         path.write_bytes(response.content)
         return path
 
@@ -343,7 +335,7 @@ Publisher/source to avoid: {article.source}
                     "prompt": prompt,
                     "stream": False,
                     "format": "json",
-                    "options": {"temperature": 0.35, "num_predict": 260},
+                    "options": {"temperature": 0.35, "num_predict": 800},
                 },
                 timeout=self.timeout,
                 trust_env=False,
@@ -363,7 +355,7 @@ Publisher/source to avoid: {article.source}
                 json={
                     "inputs": f"<s>[INST] {prompt} [/INST]",
                     "parameters": {
-                        "max_new_tokens": 260,
+                        "max_new_tokens": 800,
                         "temperature": 0.35,
                         "return_full_text": False,
                     },

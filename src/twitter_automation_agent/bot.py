@@ -114,6 +114,10 @@ class TelegramCommandBot:
         if command.name == "status":
             self.telegram.send_text("Bot is online.", chat_id=chat_id)
             return
+        if command.name == "quit":
+            self.telegram.send_text("Shutting down bot...", chat_id=chat_id)
+            import sys
+            sys.exit(0)
 
         if self._busy:
             self.telegram.send_text(
@@ -140,6 +144,8 @@ class TelegramCommandBot:
             return BotCommand(name="help")
         if raw_name in {"/status", "status"}:
             return BotCommand(name="status")
+        if raw_name in {"/quit", "quit"}:
+            return BotCommand(name="quit")
         if raw_name in {"/trending", "trending"}:
             if count is None and args:
                 count = self._parse_count(args[0])

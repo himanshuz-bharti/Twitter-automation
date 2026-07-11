@@ -36,6 +36,7 @@ Hard rules:
   "undermines", or "cover-up" unless the article text says that.
 - Do not use slurs, dehumanization, threats, or targeted harassment.
 - No hashtags unless one is naturally useful.
+- Start the tweet with a red emoji signifying urgency or importance (e.g., 🚨, ❗, or 🔴).
 - Return only the tweet text. Do not include source labels, URLs, article links, or publisher names unless the publisher is part of the news itself.
 """
 

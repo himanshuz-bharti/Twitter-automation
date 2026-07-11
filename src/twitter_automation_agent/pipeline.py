@@ -76,15 +76,13 @@ class Pipeline:
         has_sent = False
         for article in selected_articles:
             print(f"[DEBUG] Drafting tweet for article: {article.title}")
+            self.news.enrich_article(article)
             draft = self.drafter.draft(article, style)
             print(f"[DEBUG] Finding image candidates for draft...")
             image_candidates = self.images.find_candidates(article, draft_text=draft.text, limit=12)
             for image_url in image_candidates:
                 if len(draft.image_suggestions) >= 5:
                     break
-                    
-                if len(draft.image_suggestions) >= 2 and "image.pollinations.ai" in image_url:
-                    continue # Skip AI generation if we successfully fetched 2 internet images
                     
                 if "image.pollinations.ai" in image_url:
                     print(f"\n[DEBUG] [Pollinations AI] Generating and downloading AI image...")
@@ -97,18 +95,10 @@ class Pipeline:
                     path=str(image_path),
                 )
                 draft.image_suggestions.append(suggestion)
-                if len(draft.image_paths) < 2:
+                if len(draft.image_paths) < 3:
                     draft.image_paths.append(suggestion.path)
 
             item = DraftItem(article=article, draft=draft)
-            
-            if self.settings.can_send_to_telegram and not has_sent:
-                print(f"[DEBUG] Sending to Telegram...")
-                try:
-                    self.telegram.send_draft(item, 1, 1, chat_id=None)
-                    has_sent = True
-                except Exception as e:
-                    print(f"[DEBUG] Failed to send to Telegram: {e}")
 
             if post and not has_posted:
                 print(f"[DEBUG] Attempting to post to X...")
@@ -168,6 +158,12 @@ class Pipeline:
                 item.posted = False
                 item.post_id = "dry-run"
             else:
+                if self.settings.can_send_to_telegram:
+                    try:
+                        self.telegram.send_draft(item, delivered_count + 1, posts, chat_id=None)
+                    except Exception as e:
+                        print(f"[DEBUG] Failed to send to Telegram: {e}")
+
                 item.post_id = self.publisher.post(item.draft.text, item.draft.image_paths)
                 item.posted = True
                 self._append_history(output_dir, [item], "posted")

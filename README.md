@@ -1,17 +1,15 @@
 # Twitter Automation Agent
 
-This pipeline turns current news topics into factual, provocative X/Twitter drafts with relevant image suggestions. Because X returned `402 Payment Required` for `/2/tweets`, the recommended flow is now manual posting:
+This fully automated pipeline turns trending tech topics into factual, provocative X/Twitter drafts. It leverages local LLMs (via Ollama) to parse the news, draft tweets, and explicitly reason about the best images to fetch from the internet. Finally, it can send drafts to your phone via Telegram, or post them entirely hands-free to X.com using Windows clipboard automation!
 
-1. Collect recent stories from Google News topic search, or trending tech feeds when no topic is supplied.
-2. Rank and deduplicate articles.
-3. Draft a tweet with a local/open model through Ollama, or Hugging Face as an optional provider.
-4. Resolve article links and fetch a relevant image.
-5. Send the tweet draft plus image to Telegram.
-6. You manually post the text and image on X.
+## Core Capabilities
+- **News Aggregation:** Fetches the latest articles from Google News, Hacker News, The Verge, Ars Technica, and more.
+- **Local AI Drafting:** Uses Ollama (e.g. `llama3.2:3b`) to draft the tweet safely and factually.
+- **AI Image Routing:** The LLM outputs strict JSON to route queries. It fetches real-world logos/portraits from Wikipedia, and generates abstract conceptual images on-the-fly using Pollinations AI.
+- **Telegram Bot Control:** Send commands like `/post [topic]` or `/autopost [topic]` straight from your phone to trigger the agent.
+- **Hands-Free X.com Posting:** Automatically opens your default system browser (where you are already logged in to X), writes the tweet, copies the downloaded images directly to your Windows clipboard, and simulates a `Ctrl+V` to paste the media and post!
 
-The X posting code still exists if you later add paid X API credits.
-
-## Setup
+## 1. Setup Instructions
 
 ```powershell
 python -m venv .venv
@@ -20,22 +18,14 @@ pip install -e .
 copy .env.example .env
 ```
 
-## Free Local Tweet Generation With Ollama
-
-Install Ollama from:
-
-```text
-https://ollama.com/download
-```
-
-Pull a free local model:
-
+### Install Ollama (Free Local LLM)
+Install Ollama from https://ollama.com/download.
+Pull a fast, lightweight model (recommended):
 ```powershell
 ollama pull llama3.2:3b
 ```
 
-Keep Ollama running, then set `.env`:
-
+Update your `.env`:
 ```dotenv
 LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://localhost:11434
@@ -43,159 +33,57 @@ OLLAMA_MODEL=llama3.2:3b
 DEFAULT_STYLE=ragebait
 ```
 
-Good model options:
+### Telegram Bot Setup
+1. Open Telegram and message `@BotFather`. Send `/newbot` and follow the prompts.
+2. Copy the bot token into `.env` (`TELEGRAM_BOT_TOKEN=...`).
+3. Open a chat with your bot and send `/start`.
+4. Open a browser to: `https://api.telegram.org/bot<TOKEN>/getUpdates`
+5. Copy the `message.chat.id` into `.env` (`TELEGRAM_CHAT_ID=...`).
 
-- `llama3.2:3b`: recommended lightweight default for this project
-- `qwen2.5:3b`: similar size, also good for instruction following
-- `mistral:7b`: bigger, fast, stronger hooks if your machine can run it
-- `llama3.1:8b`: bigger general-purpose alternative
+*(Optional: Run `tweet-agent telegram-check` to verify your credentials work.)*
 
-If Ollama is not running, the app uses a deterministic fallback template instead of crashing.
+## 2. Using the Telegram Bot
+The best way to interact with the agent is to run it as a background service listening for Telegram commands.
 
-## Telegram Setup
-
-1. Open Telegram and message `@BotFather`.
-2. Send `/newbot` and follow the prompts.
-3. Copy the bot token into `.env`:
-
-```dotenv
-TELEGRAM_BOT_TOKEN=123456789:your_bot_token_here
-```
-
-4. Open a chat with your bot and send `/start`.
-5. Get your chat id by opening this URL in a browser, replacing `<TOKEN>` with your bot token:
-
-```text
-https://api.telegram.org/bot<TOKEN>/getUpdates
-```
-
-6. In the JSON response, copy `message.chat.id` into `.env`:
-
-```dotenv
-TELEGRAM_CHAT_ID=123456789
-```
-
-7. Verify Telegram delivery:
-
+Start the bot listener:
 ```powershell
-tweet-agent telegram-check
+tweet-agent bot
 ```
+*(Tip: If you have old hanging commands stuck in Telegram while the bot was offline, start it with `tweet-agent bot --drop-pending-updates` to ignore them and start fresh!)*
 
-For a group chat, add the bot to the group, send a message in the group, then use the group `chat.id` from `getUpdates`. Group ids are often negative numbers.
+Then, open Telegram on your phone and send commands to your bot:
+- `/topic <topic> [count]`: Drafts tweets for a topic and sends them to Telegram for review (e.g., `/topic Microsoft 3`).
+- `/trending [count]`: Drafts tweets based on trending tech news and sends them to Telegram.
+- `/post <topic>`: Drafts a single tweet for the given topic, sends it to Telegram, and immediately automates posting it to X.com on your PC.
+- `/post <topic> --posts <num> --interval <mins>`: Drafts a queue of tweets and automatically schedules them to post one-by-one to X.com (e.g., `/post "AI models" --posts 3 --interval 60`).
 
-## Generate Local Drafts
+## 3. Command Line Interface (CLI)
 
+If you prefer using the terminal, you can trigger actions manually:
+
+### Generate and Post Immediately
+Draft a single tweet about a topic and automate the browser to post it instantly:
 ```powershell
-tweet-agent run --style ragebait --count 20
+tweet-agent run --topic "SpaceX" --count 1 --post
 ```
+*Note: When this runs, it will open your default browser to X.com. **Do not touch your mouse or keyboard for 5 seconds** while it simulates the keystrokes (Ctrl+V) to attach the images and hit post!*
 
-Output is written to `outputs/` as JSON. Downloaded images go to `outputs/images/`.
-
-Preview ranked sources without drafting:
-
+### Schedule an Autopost Queue
+Draft a queue of tweets and automatically post them at intervals (e.g., 20 posts, one every 90 minutes):
 ```powershell
-tweet-agent sources --limit 10
+tweet-agent autopost --topic "AI models" --queue-size 20 --posts 20 --interval-minutes 90
 ```
 
-You can search any current news topic when needed:
-
+### Dry Run (Draft Only)
+Generate local drafts without opening the browser to post:
 ```powershell
-tweet-agent run --topic "AI models" --style ragebait --count 20
-
-tweet-agent run --topic "Bollywood gossip" --style ragebait --count 10
+tweet-agent run --topic "Apple" --count 5
 ```
+Output is written to `outputs/` as JSON, and downloaded images go to `outputs/images/`.
 
-## Send Drafts To Telegram
+## 4. How Image Fetching Works
+When the LLM finishes drafting the tweet, it uses its reasoning to determine exactly what images you need.
+1. **Wikipedia Fallback:** The LLM attempts to identify a strictly proper noun (e.g. `"Microsoft"`, `"Satya Nadella"`). The agent queries the Wikipedia API for this exact entity to get guaranteed, accurate, real-world photos.
+2. **Pollinations AI:** If Wikipedia fails to find an image, the agent uses a descriptive prompt (e.g., `"A futuristic high-tech abstract server room"`) to generate a royalty-free image on-the-fly using the Pollinations AI generator. 
 
-Each run builds and sends a fresh batch immediately. The default is 10 image-backed tweet drafts.
-
-Test without sending anything:
-
-```powershell
-tweet-agent telegram --topic "AI models" --count 10 --dry-run
-```
-
-Send 10 real drafts plus images to Telegram:
-
-```powershell
-tweet-agent telegram --topic "AI models" --count 10
-```
-
-For trending tech news, omit `--topic`:
-
-```powershell
-tweet-agent telegram --count 10
-```
-
-## Telegram Command Arguments
-
-- `--count`: number of image-backed drafts to send immediately. Defaults to `10`.
-- `--topic`: specific news topic to search, such as `AI models`, `Bollywood gossip`, `elections`, or `football transfers`. Omit it for trending tech news.
-- `--style`: draft style. Defaults to `DEFAULT_STYLE` from `.env`.
-- `--include-seen`: allows articles already sent through Telegram history.
-- `--dry-run`: builds the batch and image paths but does not send to Telegram.
-
-Images are compulsory for Telegram delivery. Drafts without a downloaded image are skipped.
-
-## History Behavior
-
-The agent writes `outputs/history.json`.
-
-- `tweet-agent run` records drafted articles.
-- `tweet-agent telegram` records only articles actually sent to Telegram.
-- `tweet-agent autopost` records only articles actually posted to X.
-
-A Telegram dry run does not mark articles as sent, so you can dry-run first and then send the same top draft for real.
-
-## Optional X Posting
-
-Test X workflow
-
-```powershell
-tweet-agent x-check
-```
-
-Then post one item:
-
-```powershell
-tweet-agent autopost --queue-size 20 --posts 1 --topic "AI models" --interval-minutes 0
-```
-
-Schedule 20 X posts, one every 90 minutes:
-
-```powershell
-tweet-agent autopost --queue-size 20 --posts 20 --interval-minutes 90
-```
-
-## Optional Hugging Face Provider
-
-Some Hugging Face hosted inference usage may require a token.
-
-```dotenv
-LLM_PROVIDER=huggingface
-HUGGINGFACE_API_TOKEN=your_token
-HUGGINGFACE_MODEL=mistralai/Mistral-7B-Instruct-v0.3
-```
-
-## Styles
-
-- `neutral`: restrained news summary
-- `sharp`: direct, skeptical framing
-- `spicy`: punchy, high-stakes framing
-- `ragebait`: maximum hook and controversy framing, still source-grounded
-
-The agent should not fabricate claims, impersonate people, or generate targeted harassment. If a claim is not supported by the collected article metadata, the drafter is instructed to leave it out and a validator can force a fallback.
-
-## Image Fetching
-
-The image finder tries, in order:
-
-1. Generate an original, abstract tech image prompt via the LLM.
-2. Render a high-quality AI image on-the-fly using the Pollinations AI generator API.
-3. Fallback to Wikipedia API for deterministic, real-world logos/portraits.
-4. Fallback to Wikimedia Commons API for supplementary file search.
-5. Use SerpAPI/DuckDuckGo Google Images fallback if configured.
-
-The script selects the top **two** distinct images and copies them to the Windows clipboard simultaneously via a PowerShell `FileDropList`, attaching both to your tweet instantly!
-
-Keep credentials out of git. `.env` is ignored by this repo.
+The agent guarantees exactly **one photo per visual suggestion** to avoid redundant concepts, and attaches the top **two** images to your tweet. After a successful post, it auto-cleans the `outputs/images/` directory to save disk space!
