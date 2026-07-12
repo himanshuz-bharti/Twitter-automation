@@ -16,50 +16,70 @@ from twitter_automation_agent.models import Article, NewsCategory
 
 HttpUrlAdapter = TypeAdapter(HttpUrl)
 
-GOOGLE_NEWS_SEARCH_FEED = "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
+BING_NEWS_SEARCH_FEED = "https://www.bing.com/news/search?q={query}&format=rss"
 
 CATEGORY_FEEDS = {
     NewsCategory.tech: [
-        GOOGLE_NEWS_SEARCH_FEED,
-        "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-US&gl=US&ceid=US:en",
+        BING_NEWS_SEARCH_FEED,
         "https://www.theverge.com/rss/index.xml",
         "https://techcrunch.com/feed/",
     ],
     NewsCategory.finance: [
-        GOOGLE_NEWS_SEARCH_FEED,
-        "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=en-US&gl=US&ceid=US:en",
+        BING_NEWS_SEARCH_FEED,
         "https://search.cnbc.com/rs/search/combinedcms/view.xml?id=19854910",
     ],
     NewsCategory.entertainment: [
-        GOOGLE_NEWS_SEARCH_FEED,
-        "https://news.google.com/rss/headlines/section/topic/ENTERTAINMENT?hl=en-US&gl=US&ceid=US:en",
+        BING_NEWS_SEARCH_FEED,
     ],
     NewsCategory.sports: [
-        GOOGLE_NEWS_SEARCH_FEED,
-        "https://news.google.com/rss/headlines/section/topic/SPORTS?hl=en-US&gl=US&ceid=US:en",
+        BING_NEWS_SEARCH_FEED,
+    ],
+    NewsCategory.politics: [
+        BING_NEWS_SEARCH_FEED,
+    ],
+    NewsCategory.world: [
+        BING_NEWS_SEARCH_FEED,
+    ],
+    NewsCategory.crime: [
+        BING_NEWS_SEARCH_FEED,
     ],
 }
 
 CATEGORY_TRENDING_QUERIES = {
     NewsCategory.tech: [
-        "technology news when:1d",
-        "artificial intelligence news when:1d",
-        "startup funding technology when:1d",
+        "technology news",
+        "artificial intelligence news",
+        "startup funding technology",
     ],
     NewsCategory.finance: [
-        "stock market news when:1d",
-        "business finance economy when:1d",
-        "crypto news when:1d",
+        "stock market news",
+        "business finance economy",
+        "crypto news",
     ],
     NewsCategory.entertainment: [
-        "bollywood news when:1d",
-        "hollywood news when:1d",
-        "entertainment movies when:1d",
+        "bollywood news",
+        "hollywood news",
+        "entertainment movies",
     ],
     NewsCategory.sports: [
-        "sports news today when:1d",
-        "cricket news when:1d",
-        "football news when:1d",
+        "sports news today",
+        "football news today",
+        "cricket news today",
+    ],
+    NewsCategory.politics: [
+        "geopolitics news",
+        "US politics news",
+        "indian politics news",
+    ],
+    NewsCategory.world: [
+        "world news today",
+        "international news",
+        "global news",
+    ],
+    NewsCategory.crime: [
+        "true crime news",
+        "crime news today",
+        "investigation news",
     ],
 }
 
@@ -202,9 +222,7 @@ def normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
-def _google_when_filter(lookback_hours: int) -> str:
-    days = max(1, min(7, (lookback_hours + 23) // 24))
-    return f"when:{days}d"
+
 
 
 def _dedupe_values(values: list[str]) -> list[str]:
@@ -265,18 +283,17 @@ def _has_token(haystack: str, token: str) -> bool:
 
 
 def _topic_queries(topic: str, lookback_hours: int) -> list[str]:
-    when_filter = _google_when_filter(lookback_hours)
     queries: list[str] = []
     for clean_topic in _topic_variants(topic):
         queries.extend(
             [
-                f"{clean_topic} {when_filter}",
-                f"{clean_topic} news {when_filter}",
-                f"latest {clean_topic} {when_filter}",
+                f"{clean_topic}",
+                f"{clean_topic} news",
+                f"latest {clean_topic}",
             ]
         )
         if " " in clean_topic:
-            queries.insert(0, f'"{clean_topic}" {when_filter}')
+            queries.insert(0, f'"{clean_topic}"')
     return _dedupe_values(queries)
 
 def _entry_datetime(entry: feedparser.FeedParserDict) -> datetime | None:
@@ -558,7 +575,7 @@ class NewsCollector:
     def _feed_urls(self, topic: str | None, lookback_hours: int, category: NewsCategory) -> list[str]:
         if topic:
             return [
-                GOOGLE_NEWS_SEARCH_FEED.format(query=quote_plus(query))
+                BING_NEWS_SEARCH_FEED.format(query=quote_plus(query))
                 for query in _topic_queries(topic, lookback_hours)
             ]
 
@@ -654,7 +671,6 @@ class NewsCollector:
                 trust_env=False,
             )
             response.raise_for_status()
-            article.resolved_url = _valid_http_url(str(response.url))
             
             soup = BeautifulSoup(response.text, "html.parser")
             paragraphs = soup.find_all("p")
@@ -662,9 +678,10 @@ class NewsCollector:
             
             if text_blocks:
                 new_summary = " ".join(text_blocks[:3])
-                if len(new_summary) > 150:
+                if len(new_summary) > 60:
                     article.summary = new_summary[:600] + ("..." if len(new_summary) > 600 else "")
+                    article.resolved_url = _valid_http_url(str(response.url))
         except Exception as e:
             pass
             
-        return bool(article.summary and len(article.summary) >= 150)
+        return bool(article.summary and len(article.summary) >= 60)

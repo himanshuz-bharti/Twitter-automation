@@ -154,8 +154,9 @@ class TelegramCommandBot:
             
         category_keyboard = {
             "keyboard": [
-                [{"text": "Tech"}, {"text": "Finance"}],
-                [{"text": "Entertainment"}, {"text": "Sports"}]
+                [{"text": "Tech"}, {"text": "Finance"}, {"text": "Politics"}],
+                [{"text": "Entertainment"}, {"text": "Sports"}],
+                [{"text": "World"}, {"text": "Crime"}]
             ],
             "resize_keyboard": True,
             "one_time_keyboard": True

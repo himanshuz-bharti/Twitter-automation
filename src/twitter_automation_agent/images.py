@@ -188,29 +188,21 @@ class ImageFinder:
         self,
         article: Article,
         draft_text: str | None = None,
-        limit: int = 8,
+        limit: int = 3,
     ) -> list[str]:
         self._ensure_resolved_article_url(article)
         targets = self._visual_subjects(article, draft_text)
-        
-        # We only want the top 2 suggestions
-        targets = targets[:2]
 
         candidates: list[str] = []
-        
-        # 1. Generate them using pollination (1 image for each of the top 2)
-        for target in targets:
-            pollinations_url = self._pollinations_images(target.pollinations_prompt)
-            candidates.append(pollinations_url)
-
-        # 2. Fetch from online sources (we only need 1 real image in total)
         subject_keywords: set[str] = set()
         for target in targets:
             subject_keywords.update(_keywords(target.wikipedia_entity))
             subject_keywords.update(_keywords(target.pollinations_prompt))
 
-        real_image = None
         for target in targets:
+            if len(candidates) >= limit:
+                break
+                
             bucket: list[str] = []
             query = target.wikipedia_entity
             
@@ -224,11 +216,10 @@ class ImageFinder:
                 bucket.extend(self._wikimedia_commons_images(query, limit=1))
                 
             if bucket:
-                real_image = bucket[0]
-                break # We just need 1 real image
-
-        if real_image:
-            candidates.append(real_image)
+                candidates.append(bucket[0])
+            else:
+                pollinations_url = self._pollinations_images(target.pollinations_prompt)
+                candidates.append(pollinations_url)
 
         return candidates
 
@@ -305,7 +296,9 @@ For each target, provide:
 2. pollinations_prompt: A highly descriptive visual scene for an AI generator.
 
 Rules:
-- Make targets diverse. (e.g., Target 1: The company. Target 2: The CEO. Target 3: A related product. Target 4: Abstract concept).
+- STRONGLY PRIORITIZE real-world entities (names of specific people, companies, places, or physical products mentioned in the article) over abstract concepts.
+- ONLY fallback to abstract concepts or general terms if there are absolutely no more real-world entities available in the text.
+- ALWAYS provide exactly 5 targets. There must NEVER be a case where you return fewer than 5 targets. If you cannot find 5 real things, fill the remaining slots with relevant abstract concepts.
 - Do not include news publisher names.
 
 Example Execution 1:

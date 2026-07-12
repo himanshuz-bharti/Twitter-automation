@@ -18,6 +18,9 @@ class NewsCategory(StrEnum):
     finance = "finance"
     entertainment = "entertainment"
     sports = "sports"
+    politics = "politics"
+    world = "world"
+    crime = "crime"
 
 
 class Article(BaseModel):
