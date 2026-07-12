@@ -9,7 +9,7 @@ from pathlib import Path
 from rich.console import Console
 
 from twitter_automation_agent.config import Settings
-from twitter_automation_agent.models import DraftStyle
+from twitter_automation_agent.models import DraftStyle, NewsCategory
 from twitter_automation_agent.pipeline import Pipeline
 from twitter_automation_agent.telegram import TelegramSender
 
@@ -17,6 +17,7 @@ HELP_TEXT = """Commands:
 /topic <topic> [count] - send drafts for a topic
 /trending [count] - send trending tech drafts
 /post <topic> [--posts <num>] [--interval <mins>] - instantly post or schedule multiple tweets
+/draft - interactively generate drafts for a topic
 /status - check that the bot is alive
 /cancel - cancel current conversation
 /help - show this message
@@ -31,14 +32,19 @@ Examples:
 
 class ConversationState(Enum):
     IDLE = auto()
-    AWAITING_TOPIC = auto()
-    AWAITING_POSTS = auto()
+    AWAITING_POST_CATEGORY = auto()
+    AWAITING_POST_TOPIC = auto()
+    AWAITING_POST_COUNT = auto()
     AWAITING_INTERVAL = auto()
+    AWAITING_DRAFT_CATEGORY = auto()
+    AWAITING_DRAFT_TOPIC = auto()
+    AWAITING_DRAFT_COUNT = auto()
 
 
 @dataclass(frozen=True)
 class BotCommand:
     name: str
+    category: NewsCategory = NewsCategory.tech
     topic: str | None = None
     count: int = 3
     style: DraftStyle | None = None
@@ -69,6 +75,7 @@ class TelegramCommandBot:
         self._busy = False
         
         self._state = ConversationState.IDLE
+        self._pending_category: NewsCategory | None = None
         self._pending_topic: str | None = None
         self._pending_posts: int | None = None
 
@@ -77,9 +84,10 @@ class TelegramCommandBot:
             raise RuntimeError("Telegram credentials are incomplete.")
 
         self.telegram.delete_webhook(drop_pending_updates=self.drop_pending_updates)
+        self.telegram.set_my_commands()
         self.console.print("[bold]Telegram command listener started.[/bold]")
         self.telegram.send_text(
-            "Bot listener is online. Send /topic Microsoft 3 or /help.",
+            "Bot listener is online. Tap the Menu button to see commands.",
             chat_id=self.settings.telegram_chat_id,
         )
 
@@ -143,9 +151,23 @@ class TelegramCommandBot:
             import sys
             sys.exit(0)
             
+        category_keyboard = {
+            "keyboard": [
+                [{"text": "Tech"}, {"text": "Finance"}],
+                [{"text": "Entertainment"}, {"text": "Sports"}]
+            ],
+            "resize_keyboard": True,
+            "one_time_keyboard": True
+        }
+
         if command.name == "interactive_post":
-            self._state = ConversationState.AWAITING_TOPIC
-            self.telegram.send_text("What topic do you want to tweet about?", chat_id=chat_id)
+            self._state = ConversationState.AWAITING_POST_CATEGORY
+            self.telegram.send_text("Which category of news? Tap a button below:", chat_id=chat_id, reply_markup=category_keyboard)
+            return
+            
+        if command.name == "interactive_draft":
+            self._state = ConversationState.AWAITING_DRAFT_CATEGORY
+            self.telegram.send_text("Which category of news? Tap a button below:", chat_id=chat_id, reply_markup=category_keyboard)
             return
 
         if self._busy:
@@ -162,13 +184,39 @@ class TelegramCommandBot:
             self._busy = False
 
     def _handle_stateful_message(self, text: str, chat_id: str) -> None:
-        if self._state == ConversationState.AWAITING_TOPIC:
-            self._pending_topic = text.strip()
-            self._state = ConversationState.AWAITING_POSTS
+        # --- CATEGORY PARSING HELPER ---
+        def parse_category(val: str) -> NewsCategory | None:
+            mapping = {
+                "tech": NewsCategory.tech, "1": NewsCategory.tech,
+                "finance": NewsCategory.finance, "2": NewsCategory.finance,
+                "entertainment": NewsCategory.entertainment, "3": NewsCategory.entertainment,
+                "sports": NewsCategory.sports, "4": NewsCategory.sports
+            }
+            return mapping.get(val.strip().lower())
+
+        # --- POSTING FLOW ---
+        if self._state == ConversationState.AWAITING_POST_CATEGORY:
+            category = parse_category(text)
+            if not category:
+                self.telegram.send_text("Invalid category. Please select from the keyboard.", chat_id=chat_id)
+                return
+            self._pending_category = category
+            self._state = ConversationState.AWAITING_POST_TOPIC
+            self.telegram.send_text(
+                "What topic do you want to tweet about? (Or type 'Trending' for general news)",
+                chat_id=chat_id,
+                reply_markup={"remove_keyboard": True}
+            )
+            return
+
+        if self._state == ConversationState.AWAITING_POST_TOPIC:
+            topic = text.strip()
+            self._pending_topic = None if topic.lower() == "trending" else topic
+            self._state = ConversationState.AWAITING_POST_COUNT
             self.telegram.send_text("How many posts do you want to schedule?", chat_id=chat_id)
             return
             
-        if self._state == ConversationState.AWAITING_POSTS:
+        if self._state == ConversationState.AWAITING_POST_COUNT:
             try:
                 self._pending_posts = int(text.strip())
                 if self._pending_posts < 1:
@@ -196,23 +244,71 @@ class TelegramCommandBot:
             internal_command_name = "autopost" if self._pending_posts > 1 else "post"
             command = BotCommand(
                 name=internal_command_name,
+                category=self._pending_category or NewsCategory.tech,
                 topic=self._pending_topic,
                 count=max(self.default_count, self._pending_posts),
                 include_seen=False,
                 posts=self._pending_posts,
                 interval_minutes=float(interval)
             )
+            self._dispatch_command(command, chat_id)
+            return
+
+        # --- DRAFTING FLOW ---
+        if self._state == ConversationState.AWAITING_DRAFT_CATEGORY:
+            category = parse_category(text)
+            if not category:
+                self.telegram.send_text("Invalid category. Please select from the keyboard.", chat_id=chat_id)
+                return
+            self._pending_category = category
+            self._state = ConversationState.AWAITING_DRAFT_TOPIC
+            self.telegram.send_text(
+                "What topic do you want to see drafts for? (Or type 'Trending')",
+                chat_id=chat_id,
+                reply_markup={"remove_keyboard": True}
+            )
+            return
+
+        if self._state == ConversationState.AWAITING_DRAFT_TOPIC:
+            topic = text.strip()
+            self._pending_topic = None if topic.lower() == "trending" else topic
+            self._state = ConversationState.AWAITING_DRAFT_COUNT
+            self.telegram.send_text("How many drafts do you want to generate?", chat_id=chat_id)
+            return
             
-            if self._busy:
-                self.telegram.send_text("A batch is already running. Please wait for it to finish before scheduling.", chat_id=chat_id)
+        if self._state == ConversationState.AWAITING_DRAFT_COUNT:
+            try:
+                count = int(text.strip())
+                if count < 1:
+                    raise ValueError()
+            except ValueError:
+                self.telegram.send_text("Please send a valid positive number for the draft count.", chat_id=chat_id)
                 return
                 
-            self._busy = True
-            try:
-                self._run_batch(command, chat_id)
-            finally:
-                self._busy = False
+            self._state = ConversationState.IDLE
+            self.telegram.send_text(f"Generating {count} drafts about '{self._pending_topic}'...", chat_id=chat_id)
+            
+            command = BotCommand(
+                name="batch",
+                category=self._pending_category or NewsCategory.tech,
+                topic=self._pending_topic,
+                count=count,
+                include_seen=False,
+                posts=1,
+            )
+            self._dispatch_command(command, chat_id)
             return
+
+    def _dispatch_command(self, command: BotCommand, chat_id: str) -> None:
+        if self._busy:
+            self.telegram.send_text("A batch is already running. Please wait for it to finish.", chat_id=chat_id)
+            return
+            
+        self._busy = True
+        try:
+            self._run_batch(command, chat_id)
+        finally:
+            self._busy = False
 
     def _parse_command(self, text: str) -> BotCommand:
         parts = shlex.split(text)
@@ -271,6 +367,9 @@ class TelegramCommandBot:
                 posts=posts,
                 interval_minutes=interval,
             )
+
+        if raw_name in {"/draft", "draft"}:
+            return BotCommand(name="interactive_draft")
 
         raise ValueError(HELP_TEXT)
 
@@ -342,6 +441,7 @@ class TelegramCommandBot:
                 skip_history=not command.include_seen,
                 dry_run=False,
                 chat_id=chat_id,
+                category=command.category,
             )
         except Exception as exc:
             self.telegram.send_text(f"Batch failed: {exc}", chat_id=chat_id)
@@ -368,6 +468,7 @@ class TelegramCommandBot:
                 count=1,
                 post=True,
                 skip_history=not command.include_seen,
+                category=command.category,
             )
         except Exception as exc:
             self.telegram.send_text(f"Post failed: {exc}", chat_id=chat_id)
@@ -399,6 +500,7 @@ class TelegramCommandBot:
                 posts=command.posts,
                 interval_minutes=command.interval_minutes,
                 skip_history=not command.include_seen,
+                category=command.category,
             )
         except Exception as exc:
             self.telegram.send_text(f"Autopost failed: {exc}", chat_id=chat_id)

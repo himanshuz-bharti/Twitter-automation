@@ -11,35 +11,56 @@ import httpx
 from bs4 import BeautifulSoup
 from pydantic import HttpUrl, TypeAdapter
 
-from twitter_automation_agent.models import Article
+from twitter_automation_agent.models import Article, NewsCategory
 
 HttpUrlAdapter = TypeAdapter(HttpUrl)
 
 GOOGLE_NEWS_SEARCH_FEED = "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
 
-DEFAULT_FEEDS = [
-    GOOGLE_NEWS_SEARCH_FEED,
-    "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-US&gl=US&ceid=US:en",
-    "https://www.theverge.com/rss/index.xml",
-    "https://techcrunch.com/feed/",
-    "https://www.wired.com/feed/rss",
-    "https://www.technologyreview.com/feed/",
-    "https://feeds.arstechnica.com/arstechnica/index",
-    "https://hnrss.org/frontpage",
-    "https://www.engadget.com/rss.xml",
-    "https://feeds.feedburner.com/venturebeat/SZYF",
-    "https://search.cnbc.com/rs/search/combinedcms/view.xml?id=19854910",
-]
+CATEGORY_FEEDS = {
+    NewsCategory.tech: [
+        GOOGLE_NEWS_SEARCH_FEED,
+        "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-US&gl=US&ceid=US:en",
+        "https://www.theverge.com/rss/index.xml",
+        "https://techcrunch.com/feed/",
+    ],
+    NewsCategory.finance: [
+        GOOGLE_NEWS_SEARCH_FEED,
+        "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=en-US&gl=US&ceid=US:en",
+        "https://search.cnbc.com/rs/search/combinedcms/view.xml?id=19854910",
+    ],
+    NewsCategory.entertainment: [
+        GOOGLE_NEWS_SEARCH_FEED,
+        "https://news.google.com/rss/headlines/section/topic/ENTERTAINMENT?hl=en-US&gl=US&ceid=US:en",
+    ],
+    NewsCategory.sports: [
+        GOOGLE_NEWS_SEARCH_FEED,
+        "https://news.google.com/rss/headlines/section/topic/SPORTS?hl=en-US&gl=US&ceid=US:en",
+    ],
+}
 
-TRENDING_TECH_QUERIES = [
-    "technology news when:1d",
-    "artificial intelligence news when:1d",
-    "startup funding technology when:1d",
-    "cybersecurity breach technology when:1d",
-    "semiconductor chips technology when:1d",
-    "big tech regulation when:1d",
-    "consumer technology product launch when:1d",
-]
+CATEGORY_TRENDING_QUERIES = {
+    NewsCategory.tech: [
+        "technology news when:1d",
+        "artificial intelligence news when:1d",
+        "startup funding technology when:1d",
+    ],
+    NewsCategory.finance: [
+        "stock market news when:1d",
+        "business finance economy when:1d",
+        "crypto news when:1d",
+    ],
+    NewsCategory.entertainment: [
+        "bollywood news when:1d",
+        "hollywood news when:1d",
+        "entertainment movies when:1d",
+    ],
+    NewsCategory.sports: [
+        "sports news today when:1d",
+        "cricket news when:1d",
+        "football news when:1d",
+    ],
+}
 
 TOPIC_STOPWORDS = {
     "about",
@@ -442,11 +463,15 @@ def article_relevance_score(article: Article, topic: str | None, cluster_size: i
     return score
 
 
-def is_technology_article(article: Article, topic: str | None = None) -> bool:
+def is_category_article(article: Article, topic: str | None = None, category: NewsCategory = NewsCategory.tech) -> bool:
     if topic:
         return is_topic_article(article, topic)
     haystack = _story_haystack(article)
-    return any(term in haystack for term in TECH_TERMS)
+    
+    if category == NewsCategory.tech:
+        return any(term in haystack for term in TECH_TERMS)
+        
+    return True # For other categories, Google News feeds are reliable enough that we don't need strict fallback keyword filtering
 
 
 def is_topic_article(article: Article, topic: str) -> bool:
@@ -463,16 +488,15 @@ def is_topic_article(article: Article, topic: str) -> bool:
     return sum(1 for term in topic_terms if _has_token(source, term)) >= max(2, len(topic_terms))
 
 class NewsCollector:
-    def __init__(self, feeds: list[str] | None = None, timeout: float = 20.0) -> None:
-        self.feeds = feeds or DEFAULT_FEEDS
+    def __init__(self, timeout: float = 20.0) -> None:
         self.timeout = timeout
 
-    def collect(self, topic: str | None, lookback_hours: int, limit: int) -> list[Article]:
+    def collect(self, topic: str | None, lookback_hours: int, limit: int, category: NewsCategory = NewsCategory.tech) -> list[Article]:
         cutoff = datetime.now(UTC) - timedelta(hours=lookback_hours)
         articles: list[Article] = []
 
-        for feed_url in self._feed_urls(topic, lookback_hours):
-            articles.extend(self._collect_feed(feed_url, topic, cutoff))
+        for feed_url in self._feed_urls(topic, lookback_hours, category):
+            articles.extend(self._collect_feed(feed_url, topic, cutoff, category))
 
         deduped, cluster_sizes = self._dedupe(articles)
         for article in deduped:
@@ -485,16 +509,17 @@ class NewsCollector:
         deduped.sort(key=lambda item: item.score, reverse=True)
         return deduped[:limit]
 
-    def _feed_urls(self, topic: str | None, lookback_hours: int) -> list[str]:
+    def _feed_urls(self, topic: str | None, lookback_hours: int, category: NewsCategory) -> list[str]:
         if topic:
             return [
                 GOOGLE_NEWS_SEARCH_FEED.format(query=quote_plus(query))
                 for query in _topic_queries(topic, lookback_hours)
             ]
 
-        queries = TRENDING_TECH_QUERIES
+        queries = CATEGORY_TRENDING_QUERIES.get(category, CATEGORY_TRENDING_QUERIES[NewsCategory.tech])
         urls: list[str] = []
-        for feed in self.feeds:
+        feeds = CATEGORY_FEEDS.get(category, CATEGORY_FEEDS[NewsCategory.tech])
+        for feed in feeds:
             if "{query}" not in feed:
                 urls.append(feed)
                 continue
@@ -502,7 +527,7 @@ class NewsCollector:
                 urls.append(feed.format(query=quote_plus(query)))
         return urls
 
-    def _collect_feed(self, feed_url: str, topic: str | None, cutoff: datetime) -> list[Article]:
+    def _collect_feed(self, feed_url: str, topic: str | None, cutoff: datetime, category: NewsCategory) -> list[Article]:
         try:
             response = httpx.get(
                 feed_url,
@@ -544,7 +569,7 @@ class NewsCollector:
                 summary=cleaned_summary,
                 image_url=_valid_http_url(_entry_image(entry)),
             )
-            if is_technology_article(article, topic) and article_relevance_score(article, topic) > 0:
+            if is_category_article(article, topic, category) and article_relevance_score(article, topic) > 0:
                 articles.append(article)
 
         return articles

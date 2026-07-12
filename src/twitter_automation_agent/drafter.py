@@ -68,6 +68,10 @@ def _trim_to_tweet(text: str, article: Article | None = None) -> str:
         text = _strip_source_mentions(text, article)
     text = re.sub(r"@([A-Za-z0-9_]{1,15})", r"\1", text)
     text = re.sub(r"\s+", " ", text).strip(" .")
+    
+    if not text.startswith("🚨"):
+        text = f"🚨 {text.lstrip()}"
+        
     if len(text) <= 280:
         return text
 

@@ -13,7 +13,7 @@ from pydantic import HttpUrl, TypeAdapter
 from twitter_automation_agent.config import Settings
 from twitter_automation_agent.drafter import TweetDrafter
 from twitter_automation_agent.images import ImageFinder
-from twitter_automation_agent.models import BatchPipelineResult, DraftItem, DraftStyle, ImageSuggestion
+from twitter_automation_agent.models import BatchPipelineResult, DraftItem, DraftStyle, ImageSuggestion, NewsCategory
 from twitter_automation_agent.news import NewsCollector
 from twitter_automation_agent.publisher import XPublisher
 from twitter_automation_agent.telegram import TelegramSender
@@ -46,6 +46,7 @@ class Pipeline:
         skip_history: bool = True,
         history_scope: HistoryScope = "drafted",
         record_history: bool = True,
+        category: NewsCategory = NewsCategory.tech,
     ) -> BatchPipelineResult:
         output_dir.mkdir(parents=True, exist_ok=True)
         history = self._load_history(output_dir) if skip_history else self._empty_history()
@@ -56,6 +57,7 @@ class Pipeline:
             topic=topic,
             lookback_hours=self.settings.news_lookback_hours,
             limit=max(self.settings.max_articles, count * 4),
+            category=category,
         )
         fresh_articles = self._filter_history(articles, history, history_scope)
         selected_articles = fresh_articles[:count]
@@ -132,6 +134,7 @@ class Pipeline:
         interval_minutes: float = 90.0,
         skip_history: bool = True,
         dry_run: bool = False,
+        category: NewsCategory = NewsCategory.tech,
     ) -> BatchPipelineResult:
         result = self.run(
             topic=topic,
@@ -142,6 +145,7 @@ class Pipeline:
             skip_history=skip_history,
             history_scope="posted",
             record_history=False,
+            category=category,
         )
 
         delivered_count = 0
@@ -193,6 +197,7 @@ class Pipeline:
         skip_history: bool = True,
         dry_run: bool = False,
         chat_id: str | None = None,
+        category: NewsCategory = NewsCategory.tech,
     ) -> BatchPipelineResult:
         result = self.run(
             topic=topic,
@@ -203,6 +208,7 @@ class Pipeline:
             skip_history=skip_history,
             history_scope="sent",
             record_history=False,
+            category=category,
         )
 
         sent_items: list[DraftItem] = []

@@ -13,6 +13,13 @@ class DraftStyle(StrEnum):
     ragebait = "ragebait"
 
 
+class NewsCategory(StrEnum):
+    tech = "tech"
+    finance = "finance"
+    entertainment = "entertainment"
+    sports = "sports"
+
+
 class Article(BaseModel):
     title: str
     url: HttpUrl

@@ -19,6 +19,20 @@ class TelegramSender:
             json={"drop_pending_updates": drop_pending_updates},
         )
 
+    def set_my_commands(self) -> None:
+        if not self.settings.can_send_to_telegram:
+            return
+        commands = [
+            {"command": "post", "description": "Schedule & post tweets to X"},
+            {"command": "draft", "description": "Generate draft ideas (no posting)"},
+            {"command": "trending", "description": "Generate drafts for trending tech news"},
+            {"command": "status", "description": "Check if the bot is alive"},
+            {"command": "cancel", "description": "Cancel the current questionnaire"},
+            {"command": "quit", "description": "Shut down the bot completely"},
+            {"command": "help", "description": "Show help message"}
+        ]
+        self._request("setMyCommands", json={"commands": commands})
+
     def get_updates(self, offset: int | None = None, timeout: int = 30) -> list[dict]:
         payload: dict[str, object] = {
             "timeout": timeout,
@@ -70,17 +84,19 @@ class TelegramSender:
 
         return message_id
 
-    def send_text(self, text: str, chat_id: str | None = None) -> str:
+    def send_text(self, text: str, chat_id: str | None = None, reply_markup: dict | None = None) -> str:
         if not self.settings.can_send_to_telegram:
             raise RuntimeError("Telegram credentials are not fully configured.")
-        response = self._request(
-            "sendMessage",
-            json={
-                "chat_id": chat_id or self.settings.telegram_chat_id,
-                "text": text,
-                "disable_web_page_preview": True,
-            },
-        )
+            
+        payload = {
+            "chat_id": chat_id or self.settings.telegram_chat_id,
+            "text": text,
+            "disable_web_page_preview": True,
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+            
+        response = self._request("sendMessage", json=payload)
         result = response.json().get("result", {})
         message_id = result.get("message_id")
         return str(message_id) if message_id is not None else "sent"
