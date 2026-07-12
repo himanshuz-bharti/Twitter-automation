@@ -60,9 +60,7 @@ class Pipeline:
             category=category,
         )
         fresh_articles = self._filter_history(articles, history, history_scope)
-        selected_articles = fresh_articles[:count]
-
-        if not selected_articles:
+        if not fresh_articles:
             if articles:
                 raise RuntimeError(
                     f"No fresh recent articles found for: {target}. "
@@ -76,9 +74,17 @@ class Pipeline:
         drafts: list[DraftItem] = []
         has_posted = False
         has_sent = False
-        for article in selected_articles:
+        for article in fresh_articles:
+            if len(drafts) >= count:
+                break
+                
+            print(f"[DEBUG] Attempting to enrich article: {article.title}")
+            is_rich = self.news.enrich_article(article)
+            if not is_rich:
+                print(f"[DEBUG] Skipping article due to insufficient content (< 150 chars after scraping).")
+                continue
+                
             print(f"[DEBUG] Drafting tweet for article: {article.title}")
-            self.news.enrich_article(article)
             draft = self.drafter.draft(article, style)
             print(f"[DEBUG] Finding image candidates for draft...")
             image_candidates = self.images.find_candidates(article, draft_text=draft.text, limit=12)
@@ -104,11 +110,21 @@ class Pipeline:
 
             if post and not has_posted:
                 print(f"[DEBUG] Attempting to post to X...")
+                
+                if self.settings.can_send_to_telegram:
+                    try:
+                        self.telegram.send_draft(item, 1, 1, chat_id=None)
+                    except Exception as e:
+                        print(f"[DEBUG] Failed to send to Telegram: {e}")
+                        
                 item.post_id = self.publisher.post(draft.text, draft.image_paths)
                 item.posted = True
                 has_posted = True
                 self._cleanup_post_artifacts(item)
             drafts.append(item)
+
+        if not drafts:
+            raise RuntimeError(f"Failed to find any high-quality, detail-rich articles for: {target}. All articles were skipped.")
 
         result = BatchPipelineResult(
             topic=target,

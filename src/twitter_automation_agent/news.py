@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from urllib.parse import quote_plus, urlparse
@@ -61,6 +62,51 @@ CATEGORY_TRENDING_QUERIES = {
         "football news when:1d",
     ],
 }
+
+def get_trending_topics(category: NewsCategory, limit: int = 4) -> list[str]:
+    feeds = CATEGORY_FEEDS.get(category, CATEGORY_FEEDS[NewsCategory.tech])
+    feed_url = feeds[1] if len(feeds) > 1 else feeds[0]
+    
+    try:
+        response = httpx.get(
+            feed_url,
+            timeout=10.0,
+            follow_redirects=True,
+            headers={"User-Agent": "TwitterAutomationAgent/0.1"},
+            trust_env=False,
+        )
+        response.raise_for_status()
+    except httpx.HTTPError:
+        return ["Trending"]
+
+    parsed = feedparser.parse(response.text)
+    phrases = []
+    
+    for entry in parsed.entries[:25]:
+        title = entry.get("title", "")
+        title = re.sub(r"\s*-\s*[^-]+$", "", title).strip()
+        
+        colon_match = re.match(r"^([^:]+):", title)
+        if colon_match:
+            word = colon_match.group(1).strip()
+            if len(word) < 25 and word.lower() not in TOPIC_STOPWORDS:
+                phrases.append(word)
+                
+        words = re.findall(r'\b[A-Z][a-z]+\b', title)
+        for w in words:
+            if w.lower() not in TOPIC_STOPWORDS and len(w) > 3:
+                phrases.append(w)
+                
+    if not phrases:
+        return ["Trending"]
+        
+    counter = Counter(phrases)
+    top_phrases = [word for word, count in counter.most_common(limit)]
+    
+    if "Trending" not in top_phrases:
+        top_phrases.insert(0, "Trending")
+        
+    return top_phrases[:limit]
 
 TOPIC_STOPWORDS = {
     "about",
@@ -595,9 +641,9 @@ class NewsCollector:
                 
         return deduped, cluster_sizes
 
-    def enrich_article(self, article: Article) -> None:
-        if article.summary and len(article.summary) > 50:
-            return
+    def enrich_article(self, article: Article) -> bool:
+        if article.summary and len(article.summary) > 250:
+            return True
             
         try:
             response = httpx.get(
@@ -616,6 +662,9 @@ class NewsCollector:
             
             if text_blocks:
                 new_summary = " ".join(text_blocks[:3])
-                article.summary = new_summary[:600] + ("..." if len(new_summary) > 600 else "")
+                if len(new_summary) > 150:
+                    article.summary = new_summary[:600] + ("..." if len(new_summary) > 600 else "")
         except Exception as e:
             pass
+            
+        return bool(article.summary and len(article.summary) >= 150)
