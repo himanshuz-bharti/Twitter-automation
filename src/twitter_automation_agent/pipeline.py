@@ -13,7 +13,7 @@ from pydantic import HttpUrl, TypeAdapter
 from twitter_automation_agent.config import Settings
 from twitter_automation_agent.drafter import TweetDrafter
 from twitter_automation_agent.images import ImageFinder
-from twitter_automation_agent.models import BatchPipelineResult, DraftItem, DraftStyle, ImageSuggestion, NewsCategory
+from twitter_automation_agent.models import BatchPipelineResult, DraftItem, DraftStyle, ImageSuggestion
 from twitter_automation_agent.news import NewsCollector
 from twitter_automation_agent.publisher import XPublisher
 from twitter_automation_agent.telegram import TelegramSender
@@ -30,7 +30,7 @@ def _title_fingerprint(title: str) -> str:
 class Pipeline:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.news = NewsCollector()
+        self.news = NewsCollector(settings=self.settings)
         self.drafter = TweetDrafter(settings)
         self.images = ImageFinder(settings)
         self.publisher = XPublisher(settings)
@@ -46,11 +46,11 @@ class Pipeline:
         skip_history: bool = True,
         history_scope: HistoryScope = "drafted",
         record_history: bool = True,
-        category: NewsCategory = NewsCategory.tech,
+        category: str = "Tech",
     ) -> BatchPipelineResult:
         output_dir.mkdir(parents=True, exist_ok=True)
         history = self._load_history(output_dir) if skip_history else self._empty_history()
-        target = topic or "trending tech news"
+        target = topic or f"trending {category.lower()} news"
 
         print(f"[DEBUG] Collecting news for {target}...")
         articles = self.news.collect(
@@ -73,55 +73,72 @@ class Pipeline:
 
         drafts: list[DraftItem] = []
         has_posted = False
-        has_sent = False
-        for article in fresh_articles:
-            if len(drafts) >= count:
-                break
-                
-            print(f"[DEBUG] Attempting to enrich article: {article.title}")
-            is_rich = self.news.enrich_article(article)
-            if not is_rich:
-                print(f"[DEBUG] Skipping article due to insufficient content (< 150 chars after scraping).")
-                continue
-                
-            print(f"[DEBUG] Drafting tweet for article: {article.title}")
-            draft = self.drafter.draft(article, style)
-            print(f"[DEBUG] Finding image candidates for draft...")
-            image_candidates = self.images.find_candidates(article, draft_text=draft.text, limit=12)
-            for image_url in image_candidates:
-                if len(draft.image_suggestions) >= 5:
+        
+        def process_articles(article_list):
+            nonlocal has_posted
+            for article in article_list:
+                if len(drafts) >= count:
                     break
                     
-                if "image.pollinations.ai" in image_url:
-                    print(f"\n[DEBUG] [Pollinations AI] Generating and downloading AI image...")
-                    
-                image_path = self.images.download(image_url, output_dir / "images")
-                if not image_path:
+                print(f"[DEBUG] Attempting to enrich article: {article.title}")
+                is_rich = self.news.enrich_article(article)
+                if not is_rich:
+                    print(f"[DEBUG] Skipping article due to insufficient content (< 150 chars after scraping).")
                     continue
-                suggestion = ImageSuggestion(
-                    url=HttpUrlAdapter.validate_python(image_url),
-                    path=str(image_path),
-                )
-                draft.image_suggestions.append(suggestion)
-                if len(draft.image_paths) < 3:
-                    draft.image_paths.append(suggestion.path)
-
-            item = DraftItem(article=article, draft=draft)
-
-            if post and not has_posted:
-                print(f"[DEBUG] Attempting to post to X...")
-                
-                if self.settings.can_send_to_telegram:
-                    try:
-                        self.telegram.send_draft(item, 1, 1, chat_id=None)
-                    except Exception as e:
-                        print(f"[DEBUG] Failed to send to Telegram: {e}")
+                    
+                print(f"[DEBUG] Drafting tweet for article: {article.title}")
+                draft = self.drafter.draft(article, style)
+                print(f"[DEBUG] Finding image candidates for draft...")
+                image_candidates = self.images.find_candidates(article, draft_text=draft.text, limit=12)
+                for image_url in image_candidates:
+                    if len(draft.image_suggestions) >= 5:
+                        break
                         
-                item.post_id = self.publisher.post(draft.text, draft.image_paths)
-                item.posted = True
-                has_posted = True
-                self._cleanup_post_artifacts(item)
-            drafts.append(item)
+                    if "image.pollinations.ai" in image_url:
+                        print("\n[DEBUG] [Pollinations AI] Generating and downloading AI image...")
+                        
+                    image_path = self.images.download(image_url, output_dir / "images")
+                    if not image_path:
+                        continue
+                    suggestion = ImageSuggestion(
+                        url=HttpUrlAdapter.validate_python(image_url),
+                        path=str(image_path),
+                    )
+                    draft.image_suggestions.append(suggestion)
+                    if len(draft.image_paths) < 3:
+                        draft.image_paths.append(suggestion.path)
+                if not draft.image_paths:
+                    print(f"[DEBUG] Skipping article because no images could be found or generated.")
+                    continue
+
+                item = DraftItem(article=article, draft=draft)
+                if post and not has_posted:
+                    print(f"[DEBUG] Attempting to post to X...")
+                    
+                    if self.settings.can_send_to_telegram:
+                        try:
+                            self.telegram.send_draft(item, 1, 1, chat_id=None)
+                        except Exception as e:
+                            print(f"[DEBUG] Failed to send to Telegram: {e}")
+                            
+                    item.post_id = self.publisher.post(draft.text, draft.image_paths)
+                    item.posted = True
+                    has_posted = True
+                    self._cleanup_post_artifacts(item)
+                drafts.append(item)
+
+        process_articles(fresh_articles)
+        
+        if len(drafts) < count:
+            print(f"[DEBUG] Not enough rich articles from primary sources (found {len(drafts)}). Triggering API fallbacks...")
+            api_articles = self.news.collect_from_apis(
+                topic=topic,
+                lookback_hours=self.settings.news_lookback_hours,
+                limit=max(self.settings.max_articles, count * 4),
+                category=category,
+            )
+            fresh_api_articles = self._filter_history(api_articles, history, history_scope)
+            process_articles(fresh_api_articles)
 
         if not drafts:
             raise RuntimeError(f"Failed to find any high-quality, detail-rich articles for: {target}. All articles were skipped.")
@@ -150,7 +167,7 @@ class Pipeline:
         interval_minutes: float = 90.0,
         skip_history: bool = True,
         dry_run: bool = False,
-        category: NewsCategory = NewsCategory.tech,
+        category: str = "Tech",
     ) -> BatchPipelineResult:
         result = self.run(
             topic=topic,
@@ -195,7 +212,7 @@ class Pipeline:
 
         result.drafts = attempted_items
         if delivered_count < posts:
-            target = topic or "trending tech news"
+            target = topic or f"trending {category.lower()} news"
             raise RuntimeError(
                 f"Only {delivered_count} image-backed draft(s) were available for {target}; "
                 f"requested {posts}. Try a larger --queue-size or run again later."
@@ -213,7 +230,7 @@ class Pipeline:
         skip_history: bool = True,
         dry_run: bool = False,
         chat_id: str | None = None,
-        category: NewsCategory = NewsCategory.tech,
+        category: str = "Tech",
     ) -> BatchPipelineResult:
         result = self.run(
             topic=topic,
@@ -251,7 +268,7 @@ class Pipeline:
 
         result.drafts = sent_items
         if len(sent_items) < count:
-            target = topic or "trending tech news"
+            target = topic or f"trending {category.lower()} news"
             raise RuntimeError(
                 f"Only {len(sent_items)} image-backed draft(s) were available for {target}; "
                 f"requested {count}. Try --include-seen or run again later."

@@ -25,7 +25,7 @@ class TelegramSender:
         commands = [
             {"command": "post", "description": "Schedule & post tweets to X"},
             {"command": "draft", "description": "Generate draft ideas (no posting)"},
-            {"command": "trending", "description": "Generate drafts for trending tech news"},
+            {"command": "trending", "description": "Generate drafts for trending news"},
             {"command": "status", "description": "Check if the bot is alive"},
             {"command": "cancel", "description": "Cancel the current questionnaire"},
             {"command": "quit", "description": "Shut down the bot completely"},
@@ -76,11 +76,14 @@ class TelegramSender:
 
         total_images = len(image_paths)
         for image_index, image_path in enumerate(image_paths, start=1):
-            self._send_photo(
-                Path(image_path),
-                caption=f"Image {image_index}/{total_images}",
-                chat_id=chat_id,
-            )
+            try:
+                self._send_photo(
+                    Path(image_path),
+                    caption=f"Image {image_index}/{total_images}",
+                    chat_id=chat_id,
+                )
+            except Exception as e:
+                print(f"[DEBUG] Failed to send photo {image_index} to Telegram: {e}")
 
         return message_id
 

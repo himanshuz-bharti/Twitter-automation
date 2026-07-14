@@ -13,15 +13,6 @@ class DraftStyle(StrEnum):
     ragebait = "ragebait"
 
 
-class NewsCategory(StrEnum):
-    tech = "tech"
-    finance = "finance"
-    entertainment = "entertainment"
-    sports = "sports"
-    politics = "politics"
-    world = "world"
-    crime = "crime"
-
 
 class Article(BaseModel):
     title: str

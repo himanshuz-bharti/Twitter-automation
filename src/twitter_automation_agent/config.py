@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     telegram_chat_id: str | None = None
 
     serpapi_api_key: str | None = None
+    
+    newsdata_api_key: str | None = None
+    newsapi_api_key: str | None = None
+    mediastack_api_key: str | None = None
 
     news_lookback_hours: int = Field(default=24, ge=1, le=168)
     max_articles: int = Field(default=80, ge=1, le=200)

@@ -57,6 +57,7 @@ def add_result_rows(table: Table, drafts: list, fallback_status: str) -> None:
 @app.command()
 def run(
     topic: str | None = typer.Option(None, help="Specific news topic to search. Omit for trending tech."),
+    category: str = typer.Option("Tech", help="Broad news category (e.g. Tech, Entertainment, Sports)."),
     style: DraftStyle | None = typer.Option(None, help="Drafting style."),
     count: int = typer.Option(20, min=1, max=50, help="Number of drafts to generate."),
     output_dir: Path = typer.Option(Path("outputs"), help="Directory for draft bundles."),
@@ -73,6 +74,7 @@ def run(
     pipeline = Pipeline(settings)
     result = pipeline.run(
         topic=topic,
+        category=category,
         style=selected_style,
         output_dir=output_dir,
         count=count,
@@ -106,7 +108,7 @@ def sources(
         limit=settings.max_articles,
     )
 
-    label = topic or "trending tech news"
+    label = topic or f"trending {category.lower()} news"
     table = Table(title=f"Top sources for: {label}")
     table.add_column("Score", justify="right")
     table.add_column("Source")

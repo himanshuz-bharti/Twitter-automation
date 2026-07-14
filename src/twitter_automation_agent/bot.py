@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shlex
 import time
 from dataclasses import dataclass
@@ -9,8 +10,8 @@ from pathlib import Path
 from rich.console import Console
 
 from twitter_automation_agent.config import Settings
-from twitter_automation_agent.models import DraftStyle, NewsCategory
-from twitter_automation_agent.news import get_trending_topics
+from twitter_automation_agent.models import DraftStyle
+from twitter_automation_agent.news import get_trending_topics, get_trending_genres
 from twitter_automation_agent.pipeline import Pipeline
 from twitter_automation_agent.telegram import TelegramSender
 
@@ -45,7 +46,7 @@ class ConversationState(Enum):
 @dataclass(frozen=True)
 class BotCommand:
     name: str
-    category: NewsCategory = NewsCategory.tech
+    category: str = "Tech"
     topic: str | None = None
     count: int = 3
     style: DraftStyle | None = None
@@ -76,7 +77,7 @@ class TelegramCommandBot:
         self._busy = False
         
         self._state = ConversationState.IDLE
-        self._pending_category: NewsCategory | None = None
+        self._pending_category: str | None = None
         self._pending_topic: str | None = None
         self._pending_posts: int | None = None
 
@@ -152,25 +153,27 @@ class TelegramCommandBot:
             import sys
             sys.exit(0)
             
-        category_keyboard = {
-            "keyboard": [
-                [{"text": "Tech"}, {"text": "Finance"}, {"text": "Politics"}],
-                [{"text": "Entertainment"}, {"text": "Sports"}],
-                [{"text": "World"}, {"text": "Crime"}]
-            ],
-            "resize_keyboard": True,
-            "one_time_keyboard": True
-        }
-
-        if command.name == "interactive_post":
-            self._state = ConversationState.AWAITING_POST_CATEGORY
-            self.telegram.send_text("Which category of news? Tap a button below:", chat_id=chat_id, reply_markup=category_keyboard)
-            return
+        if command.name in {"interactive_post", "interactive_draft"}:
+            self.telegram.send_text("🔍 Scanning global news for trending genres...", chat_id=chat_id, reply_markup={"remove_keyboard": True})
+            favorites = get_trending_genres(self.settings, limit=6)
+            category_keyboard = {
+                "keyboard": [
+                    [{"text": favorites[i]}, {"text": favorites[i+1]} if i+1 < len(favorites) else {"text": "Other"}]
+                    for i in range(0, len(favorites), 2)
+                ],
+                "resize_keyboard": True,
+                "one_time_keyboard": True
+            }
             
-        if command.name == "interactive_draft":
-            self._state = ConversationState.AWAITING_DRAFT_CATEGORY
-            self.telegram.send_text("Which category of news? Tap a button below:", chat_id=chat_id, reply_markup=category_keyboard)
-            return
+            if command.name == "interactive_post":
+                self._state = ConversationState.AWAITING_POST_CATEGORY
+                self.telegram.send_text("Which category of news? Tap a button below:", chat_id=chat_id, reply_markup=category_keyboard)
+                return
+                
+            if command.name == "interactive_draft":
+                self._state = ConversationState.AWAITING_DRAFT_CATEGORY
+                self.telegram.send_text("Which category of news? Tap a button below:", chat_id=chat_id, reply_markup=category_keyboard)
+                return
 
         if self._busy:
             self.telegram.send_text(
@@ -186,17 +189,11 @@ class TelegramCommandBot:
             self._busy = False
 
     def _handle_stateful_message(self, text: str, chat_id: str) -> None:
-        def parse_category(val: str) -> NewsCategory | None:
-            mapping = {
-                "tech": NewsCategory.tech, "1": NewsCategory.tech,
-                "finance": NewsCategory.finance, "2": NewsCategory.finance,
-                "entertainment": NewsCategory.entertainment, "3": NewsCategory.entertainment,
-                "sports": NewsCategory.sports, "4": NewsCategory.sports
-            }
-            return mapping.get(val.strip().lower())
+        def parse_category(val: str) -> str:
+            return val.strip().title()
 
-        def get_topic_keyboard(cat: NewsCategory) -> dict:
-            topics = get_trending_topics(cat, limit=4)
+        def get_topic_keyboard(cat: str) -> dict:
+            topics = get_trending_topics(self.settings, cat, limit=4)
             # Arrange in a 2x2 grid if there are 4 items
             grid = []
             if len(topics) >= 4:
@@ -217,6 +214,9 @@ class TelegramCommandBot:
             if not category:
                 self.telegram.send_text("Invalid category. Please select from the keyboard.", chat_id=chat_id)
                 return
+            if category.lower() == "other":
+                self.telegram.send_text("Please type the genre/category you want to use:", chat_id=chat_id, reply_markup={"remove_keyboard": True})
+                return
             self._pending_category = category
             self._state = ConversationState.AWAITING_POST_TOPIC
             
@@ -232,7 +232,18 @@ class TelegramCommandBot:
 
         if self._state == ConversationState.AWAITING_POST_TOPIC:
             topic = text.strip()
-            self._pending_topic = None if topic.lower() == "trending" else topic
+            
+            generic_words = {"news", "trending", "latest", "top", "updates", "today"}
+            topic_words = set(re.findall(r'[a-z0-9]+', topic.lower()))
+            cat_words = set(re.findall(r'[a-z0-9]+', self._pending_category.lower())) if self._pending_category else set()
+            
+            # If the user typed only generic words or words already in the category name (e.g. "Crime news" for "Crime"),
+            # treat it as a generic trending request (topic = None).
+            if not (topic_words - generic_words - cat_words):
+                self._pending_topic = None
+            else:
+                self._pending_topic = topic
+                
             self._state = ConversationState.AWAITING_POST_COUNT
             self.telegram.send_text(
                 "How many posts do you want to schedule?",
@@ -257,7 +268,7 @@ class TelegramCommandBot:
                 
                 command = BotCommand(
                     name="post",
-                    category=self._pending_category or NewsCategory.tech,
+                    category=self._pending_category or "Tech",
                     topic=self._pending_topic,
                     count=max(self.default_count, 1),
                     include_seen=False,
@@ -287,7 +298,7 @@ class TelegramCommandBot:
             internal_command_name = "autopost" if self._pending_posts > 1 else "post"
             command = BotCommand(
                 name=internal_command_name,
-                category=self._pending_category or NewsCategory.tech,
+                category=self._pending_category or "Tech",
                 topic=self._pending_topic,
                 count=max(self.default_count, self._pending_posts),
                 include_seen=False,
@@ -301,6 +312,9 @@ class TelegramCommandBot:
             category = parse_category(text)
             if not category:
                 self.telegram.send_text("Invalid category. Please select from the keyboard.", chat_id=chat_id)
+                return
+            if category.lower() == "other":
+                self.telegram.send_text("Please type the genre/category you want to use:", chat_id=chat_id, reply_markup={"remove_keyboard": True})
                 return
             self._pending_category = category
             self._state = ConversationState.AWAITING_DRAFT_TOPIC
@@ -317,7 +331,16 @@ class TelegramCommandBot:
 
         if self._state == ConversationState.AWAITING_DRAFT_TOPIC:
             topic = text.strip()
-            self._pending_topic = None if topic.lower() == "trending" else topic
+            
+            generic_words = {"news", "trending", "latest", "top", "updates", "today"}
+            topic_words = set(re.findall(r'[a-z0-9]+', topic.lower()))
+            cat_words = set(re.findall(r'[a-z0-9]+', self._pending_category.lower())) if self._pending_category else set()
+            
+            if not (topic_words - generic_words - cat_words):
+                self._pending_topic = None
+            else:
+                self._pending_topic = topic
+                
             self._state = ConversationState.AWAITING_DRAFT_COUNT
             self.telegram.send_text(
                 "How many drafts do you want to generate?",
@@ -341,7 +364,7 @@ class TelegramCommandBot:
             
             command = BotCommand(
                 name="batch",
-                category=self._pending_category or NewsCategory.tech,
+                category=self._pending_category or "Tech",
                 topic=self._pending_topic,
                 count=count,
                 include_seen=False,
@@ -476,7 +499,7 @@ class TelegramCommandBot:
             self._run_autopost(command, chat_id)
             return
 
-        topic_label = command.topic or "trending tech news"
+        topic_label = command.topic or f"trending {command.category.lower()} news"
         style = command.style or self.settings.default_style
         self.telegram.send_text(
             f"Building {command.count} draft(s) for {topic_label}. This can take a few minutes.",
@@ -504,7 +527,7 @@ class TelegramCommandBot:
         )
 
     def _run_post(self, command: BotCommand, chat_id: str) -> None:
-        topic_label = command.topic or "trending tech news"
+        topic_label = command.topic or f"trending {command.category.lower()} news"
         style = command.style or self.settings.default_style
         self.telegram.send_text(
             f"Drafting and auto-posting 1 tweet for {topic_label} on your PC...",
@@ -531,7 +554,7 @@ class TelegramCommandBot:
         )
 
     def _run_autopost(self, command: BotCommand, chat_id: str) -> None:
-        topic_label = command.topic or "trending tech news"
+        topic_label = command.topic or f"trending {command.category.lower()} news"
         style = command.style or self.settings.default_style
         
         queue_size = command.count if command.count > command.posts else command.posts

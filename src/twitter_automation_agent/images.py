@@ -13,6 +13,7 @@ from bs4 import BeautifulSoup
 from pydantic import HttpUrl, TypeAdapter
 
 from twitter_automation_agent.config import Settings
+from twitter_automation_agent.llm import LLMClient
 from twitter_automation_agent.models import Article
 
 @dataclass
@@ -178,6 +179,7 @@ class ImageFinder:
     def __init__(self, settings: Settings, timeout: float = 45.0) -> None:
         self.settings = settings
         self.timeout = timeout
+        self.llm = LLMClient(settings, timeout)
         self._ddg_disabled = False
 
     def find(self, article: Article, draft_text: str | None = None) -> str | None:
@@ -217,9 +219,14 @@ class ImageFinder:
                 
             if bucket:
                 candidates.append(bucket[0])
-            else:
-                pollinations_url = self._pollinations_images(target.pollinations_prompt)
-                candidates.append(pollinations_url)
+
+        if article.image_url:
+            candidates.insert(0, str(article.image_url))
+
+        # ONLY turn to Pollinations if NO web images were found for any target
+        if not candidates and targets:
+            pollinations_url = self._pollinations_images(targets[0].pollinations_prompt)
+            candidates.append(pollinations_url)
 
         return candidates
 
@@ -268,13 +275,11 @@ class ImageFinder:
 
     def _llm_visual_subjects(self, article: Article, draft_text: str | None) -> list[ImageTarget]:
         provider = self.settings.llm_provider.lower().strip()
+        if provider in {"none", "fallback", "template"}:
+            return []
+            
         prompt = self._visual_subject_prompt(article, draft_text)
-        if provider == "ollama":
-            raw = self._ollama_visual_subjects(prompt)
-        elif provider in {"huggingface", "hf"}:
-            raw = self._huggingface_visual_subjects(prompt)
-        else:
-            raw = None
+        raw = self.llm.generate(prompt, json_format=True, temperature=0.35, max_tokens=800)
         return self._parse_visual_subjects(raw)
 
     def _visual_subject_prompt(self, article: Article, draft_text: str | None) -> str:
@@ -290,15 +295,15 @@ Return JSON ONLY in exactly this format:
   ]
 }}
 
-Goal: Provide 5 diverse visual targets for this tweet.
+Goal: Provide 1 to 3 HIGHLY RELEVANT visual targets for this tweet.
 For each target, provide:
 1. wikipedia_entity: A STRICT, widely-known proper noun (e.g. "Microsoft", "Satya Nadella", "Xbox", "Flag of the United States"). DO NOT append words like "logo", "building", or "photo". This must match an exact Wikipedia article title.
 2. pollinations_prompt: A highly descriptive visual scene for an AI generator.
 
 Rules:
 - STRONGLY PRIORITIZE real-world entities (names of specific people, companies, places, or physical products mentioned in the article) over abstract concepts.
-- ONLY fallback to abstract concepts or general terms if there are absolutely no more real-world entities available in the text.
-- ALWAYS provide exactly 5 targets. There must NEVER be a case where you return fewer than 5 targets. If you cannot find 5 real things, fill the remaining slots with relevant abstract concepts.
+- ONLY output targets that are CENTRAL to the article. If the article is only about ONE central subject, return ONLY ONE target. 
+- DO NOT hallucinate names. DO NOT pad the list with generic terms (like "Revenue growth" or "IT services") just to have more targets. Quality over quantity!
 - Do not include news publisher names.
 
 Example Execution 1:
@@ -318,55 +323,6 @@ Article title: {article.title}
 Article summary: {article.summary or "none"}
 Publisher/source to avoid: {article.source}
 """
-
-    def _ollama_visual_subjects(self, prompt: str) -> str | None:
-        try:
-            response = httpx.post(
-                f"{self.settings.ollama_base_url.rstrip('/')}/api/generate",
-                json={
-                    "model": self.settings.ollama_model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "format": "json",
-                    "options": {"temperature": 0.35, "num_predict": 800},
-                },
-                timeout=self.timeout,
-                trust_env=False,
-            )
-            response.raise_for_status()
-        except httpx.HTTPError:
-            return None
-        return response.json().get("response")
-
-    def _huggingface_visual_subjects(self, prompt: str) -> str | None:
-        if not self.settings.huggingface_api_token:
-            return None
-        try:
-            response = httpx.post(
-                f"https://api-inference.huggingface.co/models/{self.settings.huggingface_model}",
-                headers={"Authorization": f"Bearer {self.settings.huggingface_api_token}"},
-                json={
-                    "inputs": f"<s>[INST] {prompt} [/INST]",
-                    "parameters": {
-                        "max_new_tokens": 800,
-                        "temperature": 0.35,
-                        "return_full_text": False,
-                    },
-                },
-                timeout=self.timeout,
-                trust_env=False,
-            )
-            response.raise_for_status()
-        except httpx.HTTPError:
-            return None
-
-        data = response.json()
-        if isinstance(data, list) and data:
-            return data[0].get("generated_text")
-        if isinstance(data, dict):
-            return data.get("generated_text")
-        return None
-
     def _parse_visual_subjects(self, raw: str | None) -> list[ImageTarget]:
         if not raw:
             return []
@@ -686,7 +642,8 @@ Publisher/source to avoid: {article.source}
                     "action": "query",
                     "prop": "pageimages",
                     "format": "json",
-                    "piprop": "original",
+                    "piprop": "thumbnail|original",
+                    "pithumbsize": 1000,
                     "titles": title
                 },
                 timeout=self.timeout,
@@ -697,17 +654,21 @@ Publisher/source to avoid: {article.source}
             
             pages = img_resp.json().get("query", {}).get("pages", {})
             for page_info in pages.values():
-                source = page_info.get("original", {}).get("source")
-                if source and self._is_usable_image_url(source):
-                    return [source]
+                original = page_info.get("original", {}).get("source")
+                if original and self._is_usable_image_url(original):
+                    return [original]
+                    
+                thumb = page_info.get("thumbnail", {}).get("source")
+                if thumb and self._is_usable_image_url(thumb):
+                    return [thumb]
                     
             return []
         except Exception:
             return []
 
     def _pollinations_images(self, query: str) -> str:
-        # Appending a style hint helps the generator create better abstract tech images
-        prompt = f"{query} high quality tech illustration"
+        # Appending a generic style hint helps the generator create better images
+        prompt = f"{query}, high quality photorealistic"
         encoded = quote(prompt)
         return f"https://image.pollinations.ai/prompt/{encoded}?nologo=true"
 
@@ -745,6 +706,7 @@ Publisher/source to avoid: {article.source}
                     "titles": titles,
                     "prop": "imageinfo",
                     "iiprop": "url",
+                    "iiurlwidth": 1000,
                     "format": "json",
                 },
                 timeout=self.timeout,
@@ -761,7 +723,12 @@ Publisher/source to avoid: {article.source}
                     source = imageinfo[0].get("url")
                     if source and self._is_usable_image_url(source):
                         urls.append(source)
-                        if len(urls) >= limit:
+                    else:
+                        thumb = imageinfo[0].get("thumburl")
+                        if thumb and self._is_usable_image_url(thumb):
+                            urls.append(thumb)
+                            
+                    if len(urls) >= limit:
                             break
             return urls
         except Exception:
