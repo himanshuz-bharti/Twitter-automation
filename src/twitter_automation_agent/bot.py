@@ -34,10 +34,12 @@ Examples:
 
 class ConversationState(Enum):
     IDLE = auto()
+    AWAITING_POST_FORMAT = auto()
     AWAITING_POST_CATEGORY = auto()
     AWAITING_POST_TOPIC = auto()
     AWAITING_POST_COUNT = auto()
     AWAITING_INTERVAL = auto()
+    AWAITING_DRAFT_FORMAT = auto()
     AWAITING_DRAFT_CATEGORY = auto()
     AWAITING_DRAFT_TOPIC = auto()
     AWAITING_DRAFT_COUNT = auto()
@@ -80,6 +82,7 @@ class TelegramCommandBot:
         self._pending_category: str | None = None
         self._pending_topic: str | None = None
         self._pending_posts: int | None = None
+        self._pending_format: str | None = None
 
     def listen(self) -> None:
         if not self.settings.can_send_to_telegram:
@@ -129,6 +132,7 @@ class TelegramCommandBot:
             self._state = ConversationState.IDLE
             self._pending_topic = None
             self._pending_posts = None
+            self._pending_format = None
             self.telegram.send_text("Conversation cancelled.", chat_id=chat_id)
             return
 
@@ -154,25 +158,20 @@ class TelegramCommandBot:
             sys.exit(0)
             
         if command.name in {"interactive_post", "interactive_draft"}:
-            self.telegram.send_text("🔍 Scanning global news for trending genres...", chat_id=chat_id, reply_markup={"remove_keyboard": True})
-            favorites = get_trending_genres(self.settings, limit=6)
-            category_keyboard = {
-                "keyboard": [
-                    [{"text": favorites[i]}, {"text": favorites[i+1]} if i+1 < len(favorites) else {"text": "Other"}]
-                    for i in range(0, len(favorites), 2)
-                ],
+            keyboard = {
+                "keyboard": [[{"text": "Post"}], [{"text": "Thread"}]],
                 "resize_keyboard": True,
                 "one_time_keyboard": True
             }
             
             if command.name == "interactive_post":
-                self._state = ConversationState.AWAITING_POST_CATEGORY
-                self.telegram.send_text("Which category of news? Tap a button below:", chat_id=chat_id, reply_markup=category_keyboard)
+                self._state = ConversationState.AWAITING_POST_FORMAT
+                self.telegram.send_text("Do you want to create a single Post or a Thread?", chat_id=chat_id, reply_markup=keyboard)
                 return
                 
             if command.name == "interactive_draft":
-                self._state = ConversationState.AWAITING_DRAFT_CATEGORY
-                self.telegram.send_text("Which category of news? Tap a button below:", chat_id=chat_id, reply_markup=category_keyboard)
+                self._state = ConversationState.AWAITING_DRAFT_FORMAT
+                self.telegram.send_text("Do you want to create a single Post or a Thread?", chat_id=chat_id, reply_markup=keyboard)
                 return
 
         if self._busy:
@@ -208,6 +207,33 @@ class TelegramCommandBot:
                 "resize_keyboard": True,
                 "one_time_keyboard": True
             }
+
+        if self._state in {ConversationState.AWAITING_POST_FORMAT, ConversationState.AWAITING_DRAFT_FORMAT}:
+            format_choice = text.strip().lower()
+            if format_choice not in {"post", "thread"}:
+                self.telegram.send_text("Invalid choice. Please select Post or Thread.", chat_id=chat_id)
+                return
+                
+            self._pending_format = format_choice
+            
+            self.telegram.send_text("🔍 Scanning global news for trending genres...", chat_id=chat_id, reply_markup={"remove_keyboard": True})
+            favorites = get_trending_genres(self.settings, limit=6)
+            category_keyboard = {
+                "keyboard": [
+                    [{"text": favorites[i]}, {"text": favorites[i+1]} if i+1 < len(favorites) else {"text": "Other"}]
+                    for i in range(0, len(favorites), 2)
+                ],
+                "resize_keyboard": True,
+                "one_time_keyboard": True
+            }
+            
+            if self._state == ConversationState.AWAITING_POST_FORMAT:
+                self._state = ConversationState.AWAITING_POST_CATEGORY
+                self.telegram.send_text("Which category of news? Tap a button below:", chat_id=chat_id, reply_markup=category_keyboard)
+            else:
+                self._state = ConversationState.AWAITING_DRAFT_CATEGORY
+                self.telegram.send_text("Which category of news? Tap a button below:", chat_id=chat_id, reply_markup=category_keyboard)
+            return
 
         if self._state == ConversationState.AWAITING_POST_CATEGORY:
             category = parse_category(text)
