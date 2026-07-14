@@ -71,6 +71,9 @@ def _trim_to_tweet(text: str, article: Article | None = None) -> str:
     if not text.startswith("🚨"):
         text = f"🚨 {text.lstrip()}"
         
+    if len(text) > 280:
+        text = text[:277].rsplit(" ", 1)[0].rstrip(" .,;:") + "..."
+        
     return text
 
 
