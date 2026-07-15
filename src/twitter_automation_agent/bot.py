@@ -55,6 +55,7 @@ class BotCommand:
     include_seen: bool = False
     posts: int = 1
     interval_minutes: float = 90.0
+    is_thread: bool = False
 
 
 class TelegramCommandBot:
@@ -270,6 +271,25 @@ class TelegramCommandBot:
             else:
                 self._pending_topic = topic
                 
+            if self._pending_format == "thread":
+                self._pending_posts = 1
+                self._state = ConversationState.IDLE
+                topic_label = self._pending_topic or "Trending"
+                self.telegram.send_text(f"Scheduling 1 thread about '{topic_label}'...", chat_id=chat_id)
+                
+                command = BotCommand(
+                    name="post",
+                    category=self._pending_category or "Tech",
+                    topic=self._pending_topic,
+                    count=max(self.default_count, 1),
+                    include_seen=False,
+                    posts=1,
+                    interval_minutes=0,
+                    is_thread=True
+                )
+                self._dispatch_command(command, chat_id)
+                return
+                
             self._state = ConversationState.AWAITING_POST_COUNT
             self.telegram.send_text(
                 "How many posts do you want to schedule?",
@@ -299,7 +319,8 @@ class TelegramCommandBot:
                     count=max(self.default_count, 1),
                     include_seen=False,
                     posts=1,
-                    interval_minutes=0
+                    interval_minutes=0,
+                    is_thread=(self._pending_format == "thread")
                 )
                 self._dispatch_command(command, chat_id)
                 return
@@ -329,7 +350,8 @@ class TelegramCommandBot:
                 count=max(self.default_count, self._pending_posts),
                 include_seen=False,
                 posts=self._pending_posts,
-                interval_minutes=float(interval)
+                interval_minutes=float(interval),
+                is_thread=(self._pending_format == "thread")
             )
             self._dispatch_command(command, chat_id)
             return
@@ -367,6 +389,23 @@ class TelegramCommandBot:
             else:
                 self._pending_topic = topic
                 
+            if self._pending_format == "thread":
+                self._state = ConversationState.IDLE
+                topic_label = self._pending_topic or "Trending"
+                self.telegram.send_text(f"Generating 1 thread draft about '{topic_label}'...", chat_id=chat_id)
+                
+                command = BotCommand(
+                    name="batch",
+                    category=self._pending_category or "Tech",
+                    topic=self._pending_topic,
+                    count=1,
+                    include_seen=False,
+                    posts=1,
+                    is_thread=True
+                )
+                self._dispatch_command(command, chat_id)
+                return
+                
             self._state = ConversationState.AWAITING_DRAFT_COUNT
             self.telegram.send_text(
                 "How many drafts do you want to generate?",
@@ -395,6 +434,7 @@ class TelegramCommandBot:
                 count=count,
                 include_seen=False,
                 posts=1,
+                is_thread=(self._pending_format == "thread")
             )
             self._dispatch_command(command, chat_id)
             return
@@ -542,6 +582,7 @@ class TelegramCommandBot:
                 dry_run=False,
                 chat_id=chat_id,
                 category=command.category,
+                is_thread=command.is_thread,
             )
         except Exception as exc:
             self.telegram.send_text(f"Batch failed: {exc}", chat_id=chat_id)
@@ -569,6 +610,7 @@ class TelegramCommandBot:
                 post=True,
                 skip_history=not command.include_seen,
                 category=command.category,
+                is_thread=command.is_thread,
             )
         except Exception as exc:
             self.telegram.send_text(f"Post failed: {exc}", chat_id=chat_id)
@@ -601,6 +643,7 @@ class TelegramCommandBot:
                 interval_minutes=command.interval_minutes,
                 skip_history=not command.include_seen,
                 category=command.category,
+                is_thread=command.is_thread,
             )
         except Exception as exc:
             self.telegram.send_text(f"Autopost failed: {exc}", chat_id=chat_id)

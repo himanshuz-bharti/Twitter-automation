@@ -47,6 +47,7 @@ class Pipeline:
         history_scope: HistoryScope = "drafted",
         record_history: bool = True,
         category: str = "Tech",
+        is_thread: bool = False,
     ) -> BatchPipelineResult:
         output_dir.mkdir(parents=True, exist_ok=True)
         history = self._load_history(output_dir) if skip_history else self._empty_history()
@@ -87,7 +88,11 @@ class Pipeline:
                     continue
                     
                 print(f"[DEBUG] Drafting tweet for article: {article.title}")
-                draft = self.drafter.draft(article, style)
+                try:
+                    draft = self.drafter.draft(article, style, is_thread=is_thread)
+                except ValueError as e:
+                    print(f"[DEBUG] Drafting failed: {e}")
+                    continue
                 print(f"[DEBUG] Finding image candidates for draft...")
                 image_candidates = self.images.find_candidates(article, draft_text=draft.text, limit=12)
                 for image_url in image_candidates:
@@ -121,7 +126,12 @@ class Pipeline:
                         except Exception as e:
                             print(f"[DEBUG] Failed to send to Telegram: {e}")
                             
-                    item.post_id = self.publisher.post(draft.text, draft.image_paths)
+                    item.post_id = self.publisher.post(
+                        text=draft.text, 
+                        image_paths=draft.image_paths, 
+                        thread_texts=draft.thread_texts if draft.is_thread else None,
+                        telegram_sender=self.telegram,
+                    )
                     item.posted = True
                     has_posted = True
                     self._cleanup_post_artifacts(item)
@@ -168,6 +178,7 @@ class Pipeline:
         skip_history: bool = True,
         dry_run: bool = False,
         category: str = "Tech",
+        is_thread: bool = False,
     ) -> BatchPipelineResult:
         result = self.run(
             topic=topic,
@@ -179,6 +190,7 @@ class Pipeline:
             history_scope="posted",
             record_history=False,
             category=category,
+            is_thread=is_thread,
         )
 
         delivered_count = 0
@@ -201,7 +213,12 @@ class Pipeline:
                     except Exception as e:
                         print(f"[DEBUG] Failed to send to Telegram: {e}")
 
-                item.post_id = self.publisher.post(item.draft.text, item.draft.image_paths)
+                item.post_id = self.publisher.post(
+                    text=item.draft.text, 
+                    image_paths=item.draft.image_paths, 
+                    thread_texts=item.draft.thread_texts if item.draft.is_thread else None,
+                    telegram_sender=self.telegram,
+                )
                 item.posted = True
                 self._append_history(output_dir, [item], "posted")
                 self._cleanup_post_artifacts(item)
@@ -231,6 +248,7 @@ class Pipeline:
         dry_run: bool = False,
         chat_id: str | None = None,
         category: str = "Tech",
+        is_thread: bool = False,
     ) -> BatchPipelineResult:
         result = self.run(
             topic=topic,
@@ -242,6 +260,7 @@ class Pipeline:
             history_scope="sent",
             record_history=False,
             category=category,
+            is_thread=is_thread,
         )
 
         sent_items: list[DraftItem] = []

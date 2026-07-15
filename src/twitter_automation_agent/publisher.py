@@ -16,7 +16,7 @@ class XPublisher:
         """
         return "system_browser", "ready"
 
-    def post(self, text: str, image_paths: list[str] | None = None) -> str:
+    def post(self, text: str, image_paths: list[str] | None = None, thread_texts: list[str] | None = None, telegram_sender=None) -> str:
         """
         Automates the Twitter web interface using the foolproof Intent URL method.
         This opens a new tab in the user's ACTUAL default browser where they are already logged in.
@@ -35,14 +35,12 @@ class XPublisher:
             print("Twitter Intent URLs cannot attach images automatically.")
             print(f"Please drag and drop these images into your Tweet:\n" + "\n".join(abs_paths))
             
-            # Try to copy the path to clipboard for easy pasting
-            try:
-                import pyperclip
-                pyperclip.copy(abs_paths[0])
-                print("(The first image path has been copied to your clipboard.)")
-            except ImportError:
-                pass
-        
+        if thread_texts and len(thread_texts) > 1:
+            print("\n[THREAD DETECTED]")
+            print("Twitter Intent URLs cannot natively post a 5-tweet thread.")
+            print("We will automate pasting the FIRST tweet and attaching the images.")
+            print("Then we will ask you for the URL of the posted tweet on Telegram to continue the thread.")
+                
         print("\nClick the 'Post' button on X.com to finish!")
         
         # Open the URL in the default browser
@@ -81,8 +79,77 @@ class XPublisher:
             
             print("Tweet automatically posted!")
             
+            if thread_texts and len(thread_texts) > 1 and telegram_sender:
+                print("\n[THREAD AUTOMATION] Waiting for the parent tweet URL from Telegram...")
+                tweet_id = self._wait_for_tweet_url_from_telegram(telegram_sender)
+                
+                if not tweet_id:
+                    print("[THREAD AUTOMATION] Aborted due to timeout or error.")
+                else:
+                    for i, next_tweet in enumerate(thread_texts[1:]):
+                        if i > 0:
+                            print(f"[THREAD AUTOMATION] Waiting 3 minutes before posting the next reply...")
+                            time.sleep(180) # 3 minute interval
+                            
+                        encoded_next = urllib.parse.quote(next_tweet)
+                        reply_url = f"https://x.com/intent/tweet?in_reply_to={tweet_id}&text={encoded_next}"
+                        
+                        print(f"[THREAD AUTOMATION] Opening reply intent for next tweet...")
+                        webbrowser.open(reply_url)
+                        time.sleep(10) # wait for compose box
+                        
+                        pyautogui.hotkey('ctrl', 'enter')
+                        print(f"[THREAD AUTOMATION] Reply posted!")
+                    
         except ImportError:
             print("\n(Note: To enable 100% hands-free posting, run: pip install pyautogui)")
         
         return f"intent-post-{int(time.time())}"
+
+    def _wait_for_tweet_url_from_telegram(self, telegram_sender) -> str | None:
+        if not telegram_sender:
+            return None
+            
+        telegram_sender.send_text(
+            "Please reply to this message with the URL of the tweet you just posted on X.com so I can post the next one in the thread! (Timeout: 5 minutes)"
+        )
+        
+        start_time = time.time()
+        timeout = 300 # 5 minutes
+        offset = None
+        
+        # Drain pending updates first
+        try:
+            updates = telegram_sender.get_updates(offset=offset, timeout=1)
+            if updates:
+                offset = updates[-1].get("update_id", 0) + 1
+        except Exception:
+            pass
+            
+        while time.time() - start_time < timeout:
+            try:
+                updates = telegram_sender.get_updates(offset=offset, timeout=10)
+                for update in updates:
+                    update_id = update.get("update_id")
+                    if isinstance(update_id, int):
+                        offset = update_id + 1
+                    
+                    message = update.get("message")
+                    if not message:
+                        continue
+                        
+                    text = str(message.get("text") or "").strip()
+                    
+                    import re
+                    match = re.search(r'(?:x\.com|twitter\.com)/[^/]+/status/(\d+)', text)
+                        
+                    if match:
+                        telegram_sender.send_text("Got it! Posting the next tweet now...")
+                        return match.group(1)
+            except Exception as e:
+                print(f"[DEBUG] Polling error: {e}")
+                time.sleep(5)
+                
+        telegram_sender.send_text("Timed out waiting for tweet URL. Aborting the rest of the thread.")
+        return None
                 

@@ -69,7 +69,11 @@ class TelegramSender:
         if not self.settings.can_send_to_telegram:
             raise RuntimeError("Telegram credentials are not fully configured.")
 
-        message_id = self.send_text(item.draft.text, chat_id=chat_id)
+        if item.draft.is_thread and item.draft.thread_texts:
+            full_text = "\n\n🧵 Next:\n\n".join(item.draft.thread_texts)
+            message_id = self.send_text(full_text, chat_id=chat_id)
+        else:
+            message_id = self.send_text(item.draft.text, chat_id=chat_id)
         image_paths = [suggestion.path for suggestion in item.draft.image_suggestions]
         if not image_paths and item.draft.image_paths:
             image_paths = item.draft.image_paths
