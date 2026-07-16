@@ -90,7 +90,7 @@ class Pipeline:
                     
                 print(f"[DEBUG] Drafting tweet for article: {article.title}")
                 try:
-                    draft = self.drafter.draft(article, style)
+                    draft = self.drafter.draft(article, style, is_thread=is_thread, thread_length=thread_length)
                 except ValueError as e:
                     print(f"[DEBUG] Skipping article due to LLM failure: {e}")
                     continue

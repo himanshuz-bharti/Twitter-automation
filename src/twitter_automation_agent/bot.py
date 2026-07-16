@@ -623,6 +623,7 @@ class TelegramCommandBot:
                 chat_id=chat_id,
                 category=command.category,
                 is_thread=command.is_thread,
+                thread_length=command.thread_length,
             )
         except Exception as exc:
             self.telegram.send_text(f"Batch failed: {exc}", chat_id=chat_id)
@@ -651,6 +652,7 @@ class TelegramCommandBot:
                 skip_history=not command.include_seen,
                 category=command.category,
                 is_thread=command.is_thread,
+                thread_length=command.thread_length,
             )
         except Exception as exc:
             self.telegram.send_text(f"Post failed: {exc}", chat_id=chat_id)
@@ -684,6 +686,7 @@ class TelegramCommandBot:
                 skip_history=not command.include_seen,
                 category=command.category,
                 is_thread=command.is_thread,
+                thread_length=command.thread_length,
             )
         except Exception as exc:
             self.telegram.send_text(f"Autopost failed: {exc}", chat_id=chat_id)
