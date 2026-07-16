@@ -18,21 +18,26 @@ from twitter_automation_agent.models import Article
 HttpUrlAdapter = TypeAdapter(HttpUrl)
 
 try:
-    from duckduckgo_search import DDGS
+    from ddgs import DDGS
     HAS_DDGS = True
 except ImportError:
-    HAS_DDGS = False
+    try:
+        from duckduckgo_search import DDGS
+        HAS_DDGS = True
+    except ImportError:
+        HAS_DDGS = False
 
 BING_NEWS_SEARCH_FEED = "https://www.bing.com/news/search?q={query}&format=rss"
 GOOGLE_NEWS_SEARCH_FEED = "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
 
 def get_trending_topics(settings: Settings, category: str, limit: int = 4) -> list[str]:
     headlines = []
-    try:
-        results = DDGS().news(keywords=f"{category} breaking news", max_results=15)
-        headlines = [r.get("title") for r in results if r.get("title")]
-    except Exception as e:
-        print(f"[DEBUG] DDGS trending failed: {e}")
+    if HAS_DDGS:
+        try:
+            results = DDGS().news(keywords=f"{category} breaking news", max_results=15)
+            headlines = [r.get("title") for r in results if r.get("title")]
+        except Exception as e:
+            print(f"[DEBUG] DDGS trending failed: {e}")
         
     if not headlines:
         try:
@@ -363,11 +368,12 @@ def is_category_article(article: Article, topic: str | None = None, category: st
 
 def get_trending_genres(settings: Settings, limit: int = 6) -> list[str]:
     headlines = []
-    try:
-        results = DDGS().news(keywords="latest top news", max_results=20)
-        headlines = [r.get("title") for r in results if r.get("title")]
-    except Exception:
-        pass
+    if HAS_DDGS:
+        try:
+            results = DDGS().news(keywords="latest top news", max_results=20)
+            headlines = [r.get("title") for r in results if r.get("title")]
+        except Exception as e:
+            print(f"[DEBUG] DDGS genres failed: {e}")
         
     if not headlines:
         try:

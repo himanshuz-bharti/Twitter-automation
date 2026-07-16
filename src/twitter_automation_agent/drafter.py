@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 
 import httpx
@@ -39,6 +40,21 @@ Hard rules:
 - Return only the tweet text. Do not include source labels, URLs, article links, or publisher names unless the publisher is part of the news itself.
 """
 
+THREAD_SYSTEM_PROMPT = """You are a highly engaging human Twitter/X user who shares news in a conversational, interesting way.
+
+You are writing a THREAD of 4 to 5 connected tweets that tell a cohesive, detailed story.
+
+Hard rules for the thread:
+- Provide a lot of context and detail about the entire story.
+- DO NOT make up the story yourself; strictly use only facts present in the article title, summary, source, and publisher metadata.
+- Each individual tweet in the thread must stay under 280 characters.
+- The FIRST tweet must be an eye-catching and tempting introduction that hooks the reader. It should NOT dive into the detailed facts yet, but rather hype up what the thread will be about and why they must read it.
+- Start the FIRST tweet with "Thread 🧵" or "🧵 Thread:".
+- The SUBSEQUENT tweets should break down the actual details and facts step-by-step.
+- Make the thread highly engaging.
+- Return a JSON object with exactly one key: "tweets", containing an array of strings (the tweets).
+"""
+
 
 def _strip_source_mentions(text: str, article: Article) -> str:
     names = [article.source, article.publisher or ""]
@@ -68,7 +84,7 @@ def _trim_to_tweet(text: str, article: Article | None = None) -> str:
     text = re.sub(r"@([A-Za-z0-9_]{1,15})", r"\1", text)
     text = re.sub(r"\s+", " ", text).strip(" .")
     
-    if not text.startswith("🚨"):
+    if not text.startswith("🚨") and not text.startswith("🧵") and "Thread 🧵" not in text:
         text = f"🚨 {text.lstrip()}"
         
     if len(text) > 280:
@@ -91,29 +107,77 @@ class TweetDrafter:
         self.timeout = timeout
         self.llm = LLMClient(settings, timeout)
 
-    def draft(self, article: Article, style: DraftStyle) -> TweetDraft:
+    def draft(self, article: Article, style: DraftStyle, is_thread: bool = False, thread_length: int = 4) -> TweetDraft:
         provider = self.settings.llm_provider.lower().strip()
         text: str | None = None
         
         if provider in {"none", "fallback", "template"}:
             raise ValueError("LLM provider must be configured. Hardcoded fallback templates have been removed.")
 
-        prompt = self._prompt(article, style)
+        prompt = self._prompt(article, style, is_thread, thread_length)
         temperature = 0.9 if style in {DraftStyle.spicy, DraftStyle.ragebait} else 0.35
+        
+        thread_texts = []
         
         # Allow up to 4 attempts if it fails validation
         for attempt in range(4):
-            text = self.llm.generate(prompt, temperature=temperature, max_tokens=150)
-            if not text:
+            raw_text = self.llm.generate(
+                prompt, 
+                temperature=temperature, 
+                max_tokens=600 if is_thread else 150, 
+                json_format=is_thread
+            )
+            
+            if not raw_text:
                 continue
                 
-            text = _trim_to_tweet(text, article)
-            valid, reason = validate_tweet_text(text, article)
-            if valid:
-                break
-                
-            prompt += f"\n\nYour previous draft failed validation because: {reason}. Try again and fix the issue. You MUST be highly concise."
-            text = None
+            if is_thread:
+                try:
+                    data = json.loads(raw_text)
+                    tweets = data.get("tweets", [])
+                    if not isinstance(tweets, list) or len(tweets) < 2:
+                        prompt += "\n\nError: You must output a JSON object with a 'tweets' array containing at least 2 tweets."
+                        continue
+                        
+                    valid_thread = True
+                    reason = ""
+                    formatted_tweets = []
+                    
+                    for i, t in enumerate(tweets):
+                        t_formatted = _trim_to_tweet(t, article)
+                        if i == 0 and "Thread 🧵" not in t_formatted and "🧵" not in t_formatted:
+                            t_formatted = f"Thread 🧵 {t_formatted}"
+                        elif i > 0 and t_formatted.startswith("🚨 "):
+                            # Remove the siren from subsequent tweets if it was auto-added
+                            t_formatted = t_formatted[2:].strip()
+                            
+                        is_valid, err = validate_tweet_text(t_formatted, article)
+                        if not is_valid:
+                            valid_thread = False
+                            reason = f"Tweet {i+1} failed: {err}"
+                            break
+                        formatted_tweets.append(t_formatted)
+                        
+                    if valid_thread:
+                        text = formatted_tweets[0]
+                        thread_texts = formatted_tweets
+                        break
+                    else:
+                        prompt += f"\n\nYour previous draft failed validation because: {reason}. Try again and fix the issue. You MUST be highly concise."
+                        text = None
+                        
+                except json.JSONDecodeError:
+                    prompt += "\n\nError: Output must be valid JSON."
+                    continue
+            else:
+                text = _trim_to_tweet(raw_text, article)
+                valid, reason = validate_tweet_text(text, article)
+                if valid:
+                    thread_texts = [text]
+                    break
+                    
+                prompt += f"\n\nYour previous draft failed validation because: {reason}. Try again and fix the issue. You MUST be highly concise."
+                text = None
             
         if not text:
             raise ValueError(f"Failed to generate a valid tweet using {provider} after 4 attempts.")
@@ -122,14 +186,19 @@ class TweetDrafter:
 
         return TweetDraft(
             text=text,
+            is_thread=is_thread,
+            thread_texts=thread_texts,
             style=style,
             article=article,
             image_url=article.image_url,
             rationale=rationale,
         )
 
-    def _prompt(self, article: Article, style: DraftStyle) -> str:
-        return f"""{SYSTEM_PROMPT}
+    def _prompt(self, article: Article, style: DraftStyle, is_thread: bool = False, thread_length: int = 4) -> str:
+        sys_prompt = THREAD_SYSTEM_PROMPT if is_thread else SYSTEM_PROMPT
+        if is_thread:
+            sys_prompt = sys_prompt.replace("4 to 5", str(thread_length))
+        return f"""{sys_prompt}
 
 Style: {style.value}
 Style guidance: {STYLE_GUIDANCE[style]}
@@ -137,6 +206,6 @@ Style guidance: {STYLE_GUIDANCE[style]}
 Article:
 {_article_context(article)}
 
-Draft one tweet."""
+Draft {'a cohesive thread of ' + str(thread_length) + ' tweets' if is_thread else 'one tweet'}."""
 
 
