@@ -35,11 +35,13 @@ Examples:
 class ConversationState(Enum):
     IDLE = auto()
     AWAITING_POST_FORMAT = auto()
+    AWAITING_POST_THREAD_LENGTH = auto()
     AWAITING_POST_CATEGORY = auto()
     AWAITING_POST_TOPIC = auto()
     AWAITING_POST_COUNT = auto()
     AWAITING_INTERVAL = auto()
     AWAITING_DRAFT_FORMAT = auto()
+    AWAITING_DRAFT_THREAD_LENGTH = auto()
     AWAITING_DRAFT_CATEGORY = auto()
     AWAITING_DRAFT_TOPIC = auto()
     AWAITING_DRAFT_COUNT = auto()
@@ -56,6 +58,7 @@ class BotCommand:
     posts: int = 1
     interval_minutes: float = 90.0
     is_thread: bool = False
+    thread_length: int = 4
 
 
 class TelegramCommandBot:
@@ -84,6 +87,7 @@ class TelegramCommandBot:
         self._pending_topic: str | None = None
         self._pending_posts: int | None = None
         self._pending_format: str | None = None
+        self._pending_thread_length: int | None = None
 
     def listen(self) -> None:
         if not self.settings.can_send_to_telegram:
@@ -134,6 +138,7 @@ class TelegramCommandBot:
             self._pending_topic = None
             self._pending_posts = None
             self._pending_format = None
+            self._pending_thread_length = None
             self.telegram.send_text("Conversation cancelled.", chat_id=chat_id)
             return
 
@@ -217,23 +222,39 @@ class TelegramCommandBot:
                 
             self._pending_format = format_choice
             
-            self.telegram.send_text("🔍 Scanning global news for trending genres...", chat_id=chat_id, reply_markup={"remove_keyboard": True})
-            favorites = get_trending_genres(self.settings, limit=6)
-            category_keyboard = {
-                "keyboard": [
-                    [{"text": favorites[i]}, {"text": favorites[i+1]} if i+1 < len(favorites) else {"text": "Other"}]
-                    for i in range(0, len(favorites), 2)
-                ],
-                "resize_keyboard": True,
-                "one_time_keyboard": True
-            }
+            if format_choice == "thread":
+                self._state = (
+                    ConversationState.AWAITING_POST_THREAD_LENGTH
+                    if self._state == ConversationState.AWAITING_POST_FORMAT
+                    else ConversationState.AWAITING_DRAFT_THREAD_LENGTH
+                )
+                self.telegram.send_text("How many tweets should be in this thread? (Max 4)", chat_id=chat_id, reply_markup={"remove_keyboard": True})
+                return
             
-            if self._state == ConversationState.AWAITING_POST_FORMAT:
-                self._state = ConversationState.AWAITING_POST_CATEGORY
-                self.telegram.send_text("Which category of news? Tap a button below:", chat_id=chat_id, reply_markup=category_keyboard)
-            else:
-                self._state = ConversationState.AWAITING_DRAFT_CATEGORY
-                self.telegram.send_text("Which category of news? Tap a button below:", chat_id=chat_id, reply_markup=category_keyboard)
+            self._state = (
+                ConversationState.AWAITING_POST_CATEGORY
+                if self._state == ConversationState.AWAITING_POST_FORMAT
+                else ConversationState.AWAITING_DRAFT_CATEGORY
+            )
+            self._ask_category(chat_id)
+            return
+
+        if self._state in {ConversationState.AWAITING_POST_THREAD_LENGTH, ConversationState.AWAITING_DRAFT_THREAD_LENGTH}:
+            try:
+                length = int(text.strip())
+                if length < 1 or length > 4:
+                    raise ValueError()
+            except ValueError:
+                self.telegram.send_text("Invalid number. Please enter a number between 1 and 4.", chat_id=chat_id)
+                return
+                
+            self._pending_thread_length = length
+            self._state = (
+                ConversationState.AWAITING_POST_CATEGORY
+                if self._state == ConversationState.AWAITING_POST_THREAD_LENGTH
+                else ConversationState.AWAITING_DRAFT_CATEGORY
+            )
+            self._ask_category(chat_id)
             return
 
         if self._state == ConversationState.AWAITING_POST_CATEGORY:
@@ -285,7 +306,8 @@ class TelegramCommandBot:
                     include_seen=False,
                     posts=1,
                     interval_minutes=0,
-                    is_thread=True
+                    is_thread=True,
+                    thread_length=self._pending_thread_length or 4
                 )
                 self._dispatch_command(command, chat_id)
                 return
@@ -320,7 +342,8 @@ class TelegramCommandBot:
                     include_seen=False,
                     posts=1,
                     interval_minutes=0,
-                    is_thread=(self._pending_format == "thread")
+                    is_thread=(self._pending_format == "thread"),
+                    thread_length=self._pending_thread_length or 4
                 )
                 self._dispatch_command(command, chat_id)
                 return
@@ -351,7 +374,8 @@ class TelegramCommandBot:
                 include_seen=False,
                 posts=self._pending_posts,
                 interval_minutes=float(interval),
-                is_thread=(self._pending_format == "thread")
+                is_thread=(self._pending_format == "thread"),
+                thread_length=self._pending_thread_length or 4
             )
             self._dispatch_command(command, chat_id)
             return
@@ -401,7 +425,8 @@ class TelegramCommandBot:
                     count=1,
                     include_seen=False,
                     posts=1,
-                    is_thread=True
+                    is_thread=True,
+                    thread_length=self._pending_thread_length or 4
                 )
                 self._dispatch_command(command, chat_id)
                 return
@@ -434,10 +459,25 @@ class TelegramCommandBot:
                 count=count,
                 include_seen=False,
                 posts=1,
-                is_thread=(self._pending_format == "thread")
+                is_thread=(self._pending_format == "thread"),
+                thread_length=self._pending_thread_length or 4
             )
             self._dispatch_command(command, chat_id)
             return
+
+    def _ask_category(self, chat_id: str) -> None:
+        self.telegram.send_text("🔍 Scanning global news for trending genres...", chat_id=chat_id, reply_markup={"remove_keyboard": True})
+        favorites = get_trending_genres(self.settings, limit=6)
+        category_keyboard = {
+            "keyboard": [
+                [{"text": favorites[i]}, {"text": favorites[i+1]} if i+1 < len(favorites) else {"text": "Other"}]
+                for i in range(0, len(favorites), 2)
+            ],
+            "resize_keyboard": True,
+            "one_time_keyboard": True
+        }
+        
+        self.telegram.send_text("Which category of news? Tap a button below:", chat_id=chat_id, reply_markup=category_keyboard)
 
     def _dispatch_command(self, command: BotCommand, chat_id: str) -> None:
         if self._busy:

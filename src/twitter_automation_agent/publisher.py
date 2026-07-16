@@ -79,12 +79,12 @@ class XPublisher:
             
             print("Tweet automatically posted!")
             
-            if thread_texts and len(thread_texts) > 1 and telegram_sender:
-                print("\n[THREAD AUTOMATION] Waiting for the parent tweet URL from Telegram...")
-                tweet_id = self._wait_for_tweet_url_from_telegram(telegram_sender)
+            if thread_texts and len(thread_texts) > 1:
+                print("\n[THREAD AUTOMATION] Fetching the parent tweet URL automatically...")
+                tweet_id = self._get_tweet_url_automatically()
                 
                 if not tweet_id:
-                    print("[THREAD AUTOMATION] Aborted due to timeout or error.")
+                    print("[THREAD AUTOMATION] Aborted due to failure to get tweet ID.")
                 else:
                     for i, next_tweet in enumerate(thread_texts[1:]):
                         if i > 0:
@@ -102,54 +102,62 @@ class XPublisher:
                         print(f"[THREAD AUTOMATION] Reply posted!")
                     
         except ImportError:
-            print("\n(Note: To enable 100% hands-free posting, run: pip install pyautogui)")
+            print("\n(Note: To enable 100% hands-free posting, run: pip install pyautogui pyperclip)")
         
         return f"intent-post-{int(time.time())}"
 
-    def _wait_for_tweet_url_from_telegram(self, telegram_sender) -> str | None:
-        if not telegram_sender:
+    def _get_tweet_url_automatically(self) -> str | None:
+        import pyautogui
+        import pyperclip
+        import re
+
+        handle = self.settings.twitter_handle
+        if not handle:
+            print("[ERROR] TWITTER_HANDLE not set in config. Cannot automatically fetch tweet URL.")
             return None
-            
-        telegram_sender.send_text(
-            "Please reply to this message with the URL of the tweet you just posted on X.com so I can post the next one in the thread! (Timeout: 5 minutes)"
-        )
+
+        # 1. Wait 7 seconds for the tweet to finish posting.
+        time.sleep(7)
+
+        # 2. Open a new tab to https://x.com/{TWITTER_HANDLE}/with_replies
+        replies_url = f"https://x.com/{handle}/with_replies"
+        webbrowser.open(replies_url)
+
+        # 3. Wait 8 seconds for the page to load.
+        time.sleep(8)
+
+        # 4. Click the center of the screen to ensure focus.
+        screen_width, screen_height = pyautogui.size()
+        pyautogui.click(screen_width // 2, screen_height // 2)
+
+        # 5. Press `j` (X.com's built-in keyboard shortcut to select the top tweet).
+        pyautogui.press('j')
+        time.sleep(1) # tiny delay just in case
+
+        # 6. Press `Enter` (X.com shortcut to open the selected tweet).
+        pyautogui.press('enter')
+
+        # 7. Wait 4 seconds for the tweet page to load.
+        time.sleep(4)
+
+        # 8. Press `Ctrl+L` (Focuses your browser's address bar).
+        pyautogui.hotkey('ctrl', 'l')
+        time.sleep(0.5)
+
+        # 9. Press `Ctrl+C` (Copies the URL to your clipboard).
+        pyautogui.hotkey('ctrl', 'c')
+        time.sleep(0.5)
+
+        # 10. Python reads the clipboard using the pyperclip library to extract the Tweet ID!
+        clipboard_content = pyperclip.paste()
+        print(f"[DEBUG] Clipboard content: {clipboard_content}")
+
+        match = re.search(r'(?:x\.com|twitter\.com)/[^/]+/status/(\d+)', clipboard_content)
+        if match:
+            tweet_id = match.group(1)
+            print(f"[SUCCESS] Extracted Tweet ID: {tweet_id}")
+            return tweet_id
         
-        start_time = time.time()
-        timeout = 300 # 5 minutes
-        offset = None
-        
-        # Drain pending updates first
-        try:
-            updates = telegram_sender.get_updates(offset=offset, timeout=1)
-            if updates:
-                offset = updates[-1].get("update_id", 0) + 1
-        except Exception:
-            pass
-            
-        while time.time() - start_time < timeout:
-            try:
-                updates = telegram_sender.get_updates(offset=offset, timeout=10)
-                for update in updates:
-                    update_id = update.get("update_id")
-                    if isinstance(update_id, int):
-                        offset = update_id + 1
-                    
-                    message = update.get("message")
-                    if not message:
-                        continue
-                        
-                    text = str(message.get("text") or "").strip()
-                    
-                    import re
-                    match = re.search(r'(?:x\.com|twitter\.com)/[^/]+/status/(\d+)', text)
-                        
-                    if match:
-                        telegram_sender.send_text("Got it! Posting the next tweet now...")
-                        return match.group(1)
-            except Exception as e:
-                print(f"[DEBUG] Polling error: {e}")
-                time.sleep(5)
-                
-        telegram_sender.send_text("Timed out waiting for tweet URL. Aborting the rest of the thread.")
+        print("[ERROR] Could not extract Tweet ID from clipboard content.")
         return None
                 

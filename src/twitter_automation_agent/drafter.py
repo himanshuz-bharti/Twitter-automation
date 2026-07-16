@@ -48,8 +48,10 @@ Hard rules for the thread:
 - Provide a lot of context and detail about the entire story.
 - DO NOT make up the story yourself; strictly use only facts present in the article title, summary, source, and publisher metadata.
 - Each individual tweet in the thread must stay under 280 characters.
+- The FIRST tweet must be an eye-catching and tempting introduction that hooks the reader. It should NOT dive into the detailed facts yet, but rather hype up what the thread will be about and why they must read it.
 - Start the FIRST tweet with "Thread 🧵" or "🧵 Thread:".
-- Make the thread highly engaging, breaking down the details step-by-step.
+- The SUBSEQUENT tweets should break down the actual details and facts step-by-step.
+- Make the thread highly engaging.
 - Return a JSON object with exactly one key: "tweets", containing an array of strings (the tweets).
 """
 
@@ -105,14 +107,14 @@ class TweetDrafter:
         self.timeout = timeout
         self.llm = LLMClient(settings, timeout)
 
-    def draft(self, article: Article, style: DraftStyle, is_thread: bool = False) -> TweetDraft:
+    def draft(self, article: Article, style: DraftStyle, is_thread: bool = False, thread_length: int = 4) -> TweetDraft:
         provider = self.settings.llm_provider.lower().strip()
         text: str | None = None
         
         if provider in {"none", "fallback", "template"}:
             raise ValueError("LLM provider must be configured. Hardcoded fallback templates have been removed.")
 
-        prompt = self._prompt(article, style, is_thread)
+        prompt = self._prompt(article, style, is_thread, thread_length)
         temperature = 0.9 if style in {DraftStyle.spicy, DraftStyle.ragebait} else 0.35
         
         thread_texts = []
@@ -192,8 +194,10 @@ class TweetDrafter:
             rationale=rationale,
         )
 
-    def _prompt(self, article: Article, style: DraftStyle, is_thread: bool = False) -> str:
+    def _prompt(self, article: Article, style: DraftStyle, is_thread: bool = False, thread_length: int = 4) -> str:
         sys_prompt = THREAD_SYSTEM_PROMPT if is_thread else SYSTEM_PROMPT
+        if is_thread:
+            sys_prompt = sys_prompt.replace("4 to 5", str(thread_length))
         return f"""{sys_prompt}
 
 Style: {style.value}
@@ -202,6 +206,6 @@ Style guidance: {STYLE_GUIDANCE[style]}
 Article:
 {_article_context(article)}
 
-Draft {'a cohesive thread of 4-5 tweets' if is_thread else 'one tweet'}."""
+Draft {'a cohesive thread of ' + str(thread_length) + ' tweets' if is_thread else 'one tweet'}."""
 
 

@@ -48,6 +48,7 @@ class Pipeline:
         record_history: bool = True,
         category: str = "Tech",
         is_thread: bool = False,
+        thread_length: int = 4,
     ) -> BatchPipelineResult:
         output_dir.mkdir(parents=True, exist_ok=True)
         history = self._load_history(output_dir) if skip_history else self._empty_history()
@@ -89,7 +90,7 @@ class Pipeline:
                     
                 print(f"[DEBUG] Drafting tweet for article: {article.title}")
                 try:
-                    draft = self.drafter.draft(article, style, is_thread=is_thread)
+                    draft = self.drafter.draft(article, style, is_thread=is_thread, thread_length=thread_length)
                 except ValueError as e:
                     print(f"[DEBUG] Drafting failed: {e}")
                     continue
@@ -179,6 +180,7 @@ class Pipeline:
         dry_run: bool = False,
         category: str = "Tech",
         is_thread: bool = False,
+        thread_length: int = 4,
     ) -> BatchPipelineResult:
         result = self.run(
             topic=topic,
@@ -191,6 +193,7 @@ class Pipeline:
             record_history=False,
             category=category,
             is_thread=is_thread,
+            thread_length=thread_length,
         )
 
         delivered_count = 0
@@ -249,6 +252,7 @@ class Pipeline:
         chat_id: str | None = None,
         category: str = "Tech",
         is_thread: bool = False,
+        thread_length: int = 4,
     ) -> BatchPipelineResult:
         result = self.run(
             topic=topic,
@@ -261,6 +265,7 @@ class Pipeline:
             record_history=False,
             category=category,
             is_thread=is_thread,
+            thread_length=thread_length,
         )
 
         sent_items: list[DraftItem] = []
