@@ -90,9 +90,9 @@ class Pipeline:
                     
                 print(f"[DEBUG] Drafting tweet for article: {article.title}")
                 try:
-                    draft = self.drafter.draft(article, style, is_thread=is_thread, thread_length=thread_length)
+                    draft = self.drafter.draft(article, style)
                 except ValueError as e:
-                    print(f"[DEBUG] Drafting failed: {e}")
+                    print(f"[DEBUG] Skipping article due to LLM failure: {e}")
                     continue
                 print(f"[DEBUG] Finding image candidates for draft...")
                 image_candidates = self.images.find_candidates(article, draft_text=draft.text, limit=12)
