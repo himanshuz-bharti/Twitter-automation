@@ -16,6 +16,8 @@ dependencies = [
     "playwright>=1.45.0",
     "duckduckgo-search>=8.1.1",
     "python-dateutil>=2.9.0",
+    "SpeechRecognition>=3.10.0",
+    "pydub>=0.25.1",
 ]
 
 [project.optional-dependencies]

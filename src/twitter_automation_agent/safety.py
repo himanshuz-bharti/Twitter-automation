@@ -69,8 +69,8 @@ def _number_claims(value: str) -> set[str]:
 
 
 def validate_tweet_text(text: str, article: Article) -> tuple[bool, str | None]:
-    if len(text) > 280:
-        return False, "Tweet exceeds 280 characters."
+    if len(text) > 260:
+        return False, "Tweet exceeds 260 characters."
 
     lowered = text.lower()
     for pattern in DISALLOWED_PATTERNS:

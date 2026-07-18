@@ -12,10 +12,13 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     llm_provider: str = "ollama"
+    dialog_llm_provider: str = "openrouter"
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.2:3b"
     huggingface_api_token: str | None = None
     huggingface_model: str = "mistralai/Mistral-7B-Instruct-v0.3"
+    openrouter_api_key: str | None = None
+    openrouter_model: str = "openai/gpt-4o-mini"
 
     x_api_key: str | None = None
     x_api_secret: str | None = None

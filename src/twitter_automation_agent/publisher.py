@@ -103,61 +103,67 @@ class XPublisher:
                     
         except ImportError:
             print("\n(Note: To enable 100% hands-free posting, run: pip install pyautogui pyperclip)")
+        except Exception as e:
+            print(f"\n[ERROR] GUI Automation failed: {e}")
+            print("You may need to manually click 'Post' in the opened browser tab.")
         
         return f"intent-post-{int(time.time())}"
 
     def _get_tweet_url_automatically(self) -> str | None:
-        import pyautogui
-        import pyperclip
-        import re
+        try:
+            import pyautogui
+            import pyperclip
+            import re
 
-        handle = self.settings.twitter_handle
-        if not handle:
-            print("[ERROR] TWITTER_HANDLE not set in config. Cannot automatically fetch tweet URL.")
+            handle = self.settings.twitter_handle
+            if not handle:
+                print("[ERROR] TWITTER_HANDLE not set in config. Cannot automatically fetch tweet URL.")
+                return None
+
+            # 1. Wait 7 seconds for the tweet to finish posting.
+            time.sleep(7)
+
+            # 2. Open a new tab to https://x.com/{TWITTER_HANDLE}/with_replies
+            replies_url = f"https://x.com/{handle}/with_replies"
+            webbrowser.open(replies_url)
+
+            # 3. Wait 8 seconds for the page to load.
+            time.sleep(8)
+
+            # 4. Click the center of the screen to ensure focus.
+            screen_width, screen_height = pyautogui.size()
+            pyautogui.click(screen_width // 2, screen_height // 2)
+
+            # 5. Press `j` (X.com's built-in keyboard shortcut to select the top tweet).
+            pyautogui.press('j')
+            time.sleep(1) # tiny delay just in case
+
+            # 6. Press `Enter` (X.com shortcut to open the selected tweet).
+            pyautogui.press('enter')
+
+            # 7. Wait 4 seconds for the tweet page to load.
+            time.sleep(4)
+
+            # 8. Press `Ctrl+L` (Focuses your browser's address bar).
+            pyautogui.hotkey('ctrl', 'l')
+            time.sleep(0.5)
+
+            # 9. Press `Ctrl+C` (Copies the URL to your clipboard).
+            pyautogui.hotkey('ctrl', 'c')
+            time.sleep(0.5)
+
+            # 10. Python reads the clipboard using the pyperclip library to extract the Tweet ID!
+            clipboard_content = pyperclip.paste()
+            print(f"[DEBUG] Clipboard content: {clipboard_content}")
+
+            match = re.search(r'(?:x\.com|twitter\.com)/[^/]+/status/(\d+)', clipboard_content)
+            if match:
+                tweet_id = match.group(1)
+                print(f"[SUCCESS] Extracted Tweet ID: {tweet_id}")
+                return tweet_id
+            
+            print("[ERROR] Could not extract Tweet ID from clipboard content.")
             return None
-
-        # 1. Wait 7 seconds for the tweet to finish posting.
-        time.sleep(7)
-
-        # 2. Open a new tab to https://x.com/{TWITTER_HANDLE}/with_replies
-        replies_url = f"https://x.com/{handle}/with_replies"
-        webbrowser.open(replies_url)
-
-        # 3. Wait 8 seconds for the page to load.
-        time.sleep(8)
-
-        # 4. Click the center of the screen to ensure focus.
-        screen_width, screen_height = pyautogui.size()
-        pyautogui.click(screen_width // 2, screen_height // 2)
-
-        # 5. Press `j` (X.com's built-in keyboard shortcut to select the top tweet).
-        pyautogui.press('j')
-        time.sleep(1) # tiny delay just in case
-
-        # 6. Press `Enter` (X.com shortcut to open the selected tweet).
-        pyautogui.press('enter')
-
-        # 7. Wait 4 seconds for the tweet page to load.
-        time.sleep(4)
-
-        # 8. Press `Ctrl+L` (Focuses your browser's address bar).
-        pyautogui.hotkey('ctrl', 'l')
-        time.sleep(0.5)
-
-        # 9. Press `Ctrl+C` (Copies the URL to your clipboard).
-        pyautogui.hotkey('ctrl', 'c')
-        time.sleep(0.5)
-
-        # 10. Python reads the clipboard using the pyperclip library to extract the Tweet ID!
-        clipboard_content = pyperclip.paste()
-        print(f"[DEBUG] Clipboard content: {clipboard_content}")
-
-        match = re.search(r'(?:x\.com|twitter\.com)/[^/]+/status/(\d+)', clipboard_content)
-        if match:
-            tweet_id = match.group(1)
-            print(f"[SUCCESS] Extracted Tweet ID: {tweet_id}")
-            return tweet_id
-        
-        print("[ERROR] Could not extract Tweet ID from clipboard content.")
-        return None
-                
+        except Exception as e:
+            print(f"[ERROR] Failed to automatically fetch tweet URL: {e}")
+            return None

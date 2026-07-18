@@ -62,16 +62,7 @@ class Pipeline:
             category=category,
         )
         fresh_articles = self._filter_history(articles, history, history_scope)
-        if not fresh_articles:
-            if articles:
-                raise RuntimeError(
-                    f"No fresh recent articles found for: {target}. "
-                    "Use --include-seen to allow articles already generated before."
-                )
-            raise RuntimeError(
-                f"No recent articles found for: {target}. Try a broader spelling, "
-                "a more famous related name, or increase NEWS_LOOKBACK_HOURS."
-            )
+        # Removed early exit to allow API fallbacks to trigger when primary sources return 0 articles
 
         drafts: list[DraftItem] = []
         has_posted = False
