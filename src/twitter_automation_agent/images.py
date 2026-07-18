@@ -176,7 +176,7 @@ def _subject_key(subject: str) -> str:
 
 
 class ImageFinder:
-    def __init__(self, settings: Settings, timeout: float = 45.0) -> None:
+    def __init__(self, settings: Settings, timeout: float = 180.0) -> None:
         self.settings = settings
         self.timeout = timeout
         self.llm = LLMClient(settings, timeout)

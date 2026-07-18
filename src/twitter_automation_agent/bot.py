@@ -34,17 +34,7 @@ Examples:
 
 class ConversationState(Enum):
     IDLE = auto()
-    AWAITING_POST_FORMAT = auto()
-    AWAITING_POST_THREAD_LENGTH = auto()
-    AWAITING_POST_CATEGORY = auto()
-    AWAITING_POST_TOPIC = auto()
-    AWAITING_POST_COUNT = auto()
-    AWAITING_INTERVAL = auto()
-    AWAITING_DRAFT_FORMAT = auto()
-    AWAITING_DRAFT_THREAD_LENGTH = auto()
-    AWAITING_DRAFT_CATEGORY = auto()
-    AWAITING_DRAFT_TOPIC = auto()
-    AWAITING_DRAFT_COUNT = auto()
+    DIALOG = auto()
 
 
 @dataclass(frozen=True)
@@ -83,11 +73,7 @@ class TelegramCommandBot:
         self._busy = False
         
         self._state = ConversationState.IDLE
-        self._pending_category: str | None = None
-        self._pending_topic: str | None = None
-        self._pending_posts: int | None = None
-        self._pending_format: str | None = None
-        self._pending_thread_length: int | None = None
+        self._dialog_slots = {"action": None, "topic": None, "count": None}
 
     def listen(self) -> None:
         if not self.settings.can_send_to_telegram:
@@ -114,7 +100,10 @@ class TelegramCommandBot:
                 update_id = update.get("update_id")
                 if isinstance(update_id, int):
                     offset = update_id + 1
-                self._handle_update(update)
+                try:
+                    self._handle_update(update)
+                except Exception as exc:
+                    self.console.print(f"[red]Error handling update:[/red] {exc}")
 
     def _handle_update(self, update: dict) -> None:
         message = update.get("message")
@@ -130,354 +119,128 @@ class TelegramCommandBot:
             return
 
         text = str(message.get("text") or "").strip()
+        voice = message.get("voice")
+
+        if voice:
+            self.telegram.send_text("🎙️ Processing voice command...", chat_id=chat_id)
+            try:
+                file_id = voice.get("file_id")
+                file_path = self.telegram.get_file_path(file_id)
+                audio_data = self.telegram.download_file(file_path)
+                
+                from twitter_automation_agent.llm import LLMClient
+                llm = LLMClient(self.settings)
+                
+                transcription = llm.transcribe_audio_local(audio_data)
+                if not transcription:
+                    self.telegram.send_text("❌ Failed to transcribe audio locally. Ensure ffmpeg is installed and working.", chat_id=chat_id)
+                    return
+                    
+                self.telegram.send_text(f"🗣️ You said: {transcription}", chat_id=chat_id)
+                text = transcription  # Treat the transcription as the text message
+                
+            except Exception as e:
+                self.telegram.send_text(f"Error processing voice: {e}", chat_id=chat_id)
+                return
+
         if not text:
             return
 
-        if text.lower() in {"/cancel", "cancel"}:
+        if text.lower() == "/cancel":
             self._state = ConversationState.IDLE
-            self._pending_topic = None
-            self._pending_posts = None
-            self._pending_format = None
-            self._pending_thread_length = None
+            self._dialog_slots = {"action": None, "topic": None, "count": None}
             self.telegram.send_text("Conversation cancelled.", chat_id=chat_id)
             return
-
-        if self._state != ConversationState.IDLE:
-            self._handle_stateful_message(text, chat_id)
-            return
-
-        try:
-            command = self._parse_command(text)
-        except ValueError as exc:
-            self.telegram.send_text(str(exc), chat_id=chat_id)
-            return
-
-        if command.name == "help":
-            self.telegram.send_text(HELP_TEXT, chat_id=chat_id)
-            return
-        if command.name == "status":
-            self.telegram.send_text("Bot is online.", chat_id=chat_id)
-            return
-        if command.name == "quit":
-            self.telegram.send_text("Shutting down bot...", chat_id=chat_id)
-            import sys
-            sys.exit(0)
             
-        if command.name in {"interactive_post", "interactive_draft"}:
-            keyboard = {
-                "keyboard": [[{"text": "Post"}], [{"text": "Thread"}]],
-                "resize_keyboard": True,
-                "one_time_keyboard": True
-            }
-            
+        # Route to commands if starting with /
+        if text.startswith("/"):
+            try:
+                command = self._parse_command(text)
+            except ValueError as exc:
+                self.telegram.send_text(str(exc), chat_id=chat_id)
+                return
+                
+            if command.name == "help":
+                self.telegram.send_text(HELP_TEXT, chat_id=chat_id)
+                return
+            if command.name == "status":
+                self.telegram.send_text("Bot is online.", chat_id=chat_id)
+                return
+            if command.name == "quit":
+                self.telegram.send_text("Shutting down bot...", chat_id=chat_id)
+                import sys
+                sys.exit(0)
+                
             if command.name == "interactive_post":
-                self._state = ConversationState.AWAITING_POST_FORMAT
-                self.telegram.send_text("Do you want to create a single Post or a Thread?", chat_id=chat_id, reply_markup=keyboard)
+                self._state = ConversationState.DIALOG
+                self._dialog_slots = {"action": "tweet", "topic": None, "count": None}
+                self.telegram.send_text("What topic do you want to post about?", chat_id=chat_id, reply_markup={"remove_keyboard": True})
                 return
                 
             if command.name == "interactive_draft":
-                self._state = ConversationState.AWAITING_DRAFT_FORMAT
-                self.telegram.send_text("Do you want to create a single Post or a Thread?", chat_id=chat_id, reply_markup=keyboard)
-                return
-
-        if self._busy:
-            self.telegram.send_text(
-                "A batch is already running. Try again after it finishes.",
-                chat_id=chat_id,
-            )
-            return
-
-        self._busy = True
-        try:
-            self._run_batch(command, chat_id)
-        finally:
-            self._busy = False
-
-    def _handle_stateful_message(self, text: str, chat_id: str) -> None:
-        def parse_category(val: str) -> str:
-            return val.strip().title()
-
-        def get_topic_keyboard(cat: str) -> dict:
-            topics = get_trending_topics(self.settings, cat, limit=4)
-            # Arrange in a 2x2 grid if there are 4 items
-            grid = []
-            if len(topics) >= 4:
-                grid = [[{"text": topics[0]}, {"text": topics[1]}], [{"text": topics[2]}, {"text": topics[3]}]]
-            elif len(topics) >= 2:
-                grid = [[{"text": topics[0]}, {"text": topics[1]}]] + ([[{"text": t}] for t in topics[2:]])
-            else:
-                grid = [[{"text": t} for t in topics]]
-            
-            return {
-                "keyboard": grid,
-                "resize_keyboard": True,
-                "one_time_keyboard": True
-            }
-
-        if self._state in {ConversationState.AWAITING_POST_FORMAT, ConversationState.AWAITING_DRAFT_FORMAT}:
-            format_choice = text.strip().lower()
-            if format_choice not in {"post", "thread"}:
-                self.telegram.send_text("Invalid choice. Please select Post or Thread.", chat_id=chat_id)
+                self._state = ConversationState.DIALOG
+                self._dialog_slots = {"action": "tweet", "topic": None, "count": None}
+                self.telegram.send_text("What topic do you want to draft a post about?", chat_id=chat_id, reply_markup={"remove_keyboard": True})
                 return
                 
-            self._pending_format = format_choice
-            
-            if format_choice == "thread":
-                self._state = (
-                    ConversationState.AWAITING_POST_THREAD_LENGTH
-                    if self._state == ConversationState.AWAITING_POST_FORMAT
-                    else ConversationState.AWAITING_DRAFT_THREAD_LENGTH
-                )
-                self.telegram.send_text("How many tweets should be in this thread? (Max 4)", chat_id=chat_id, reply_markup={"remove_keyboard": True})
-                return
-            
-            self._state = (
-                ConversationState.AWAITING_POST_CATEGORY
-                if self._state == ConversationState.AWAITING_POST_FORMAT
-                else ConversationState.AWAITING_DRAFT_CATEGORY
-            )
-            self._ask_category(chat_id)
-            return
-
-        if self._state in {ConversationState.AWAITING_POST_THREAD_LENGTH, ConversationState.AWAITING_DRAFT_THREAD_LENGTH}:
-            try:
-                length = int(text.strip())
-                if length < 1 or length > 4:
-                    raise ValueError()
-            except ValueError:
-                self.telegram.send_text("Invalid number. Please enter a number between 1 and 4.", chat_id=chat_id)
-                return
-                
-            self._pending_thread_length = length
-            self._state = (
-                ConversationState.AWAITING_POST_CATEGORY
-                if self._state == ConversationState.AWAITING_POST_THREAD_LENGTH
-                else ConversationState.AWAITING_DRAFT_CATEGORY
-            )
-            self._ask_category(chat_id)
-            return
-
-        if self._state == ConversationState.AWAITING_POST_CATEGORY:
-            category = parse_category(text)
-            if not category:
-                self.telegram.send_text("Invalid category. Please select from the keyboard.", chat_id=chat_id)
-                return
-            if category.lower() == "other":
-                self.telegram.send_text("Please type the genre/category you want to use:", chat_id=chat_id, reply_markup={"remove_keyboard": True})
-                return
-            self._pending_category = category
-            self._state = ConversationState.AWAITING_POST_TOPIC
-            
-            self.telegram.send_text("🔍 Scanning live news for trending topics...", chat_id=chat_id, reply_markup={"remove_keyboard": True})
-            topics_keyboard = get_topic_keyboard(category)
-            
-            self.telegram.send_text(
-                "What topic do you want to tweet about? Tap a suggestion or type your own:",
-                chat_id=chat_id,
-                reply_markup=topics_keyboard
-            )
-            return
-
-        if self._state == ConversationState.AWAITING_POST_TOPIC:
-            topic = text.strip()
-            
-            generic_words = {"news", "trending", "latest", "top", "updates", "today"}
-            topic_words = set(re.findall(r'[a-z0-9]+', topic.lower()))
-            cat_words = set(re.findall(r'[a-z0-9]+', self._pending_category.lower())) if self._pending_category else set()
-            
-            # If the user typed only generic words or words already in the category name (e.g. "Crime news" for "Crime"),
-            # treat it as a generic trending request (topic = None).
-            if not (topic_words - generic_words - cat_words):
-                self._pending_topic = None
-            else:
-                self._pending_topic = topic
-                
-            if self._pending_format == "thread":
-                self._pending_posts = 1
-                self._state = ConversationState.IDLE
-                topic_label = self._pending_topic or "Trending"
-                self.telegram.send_text(f"Scheduling 1 thread about '{topic_label}'...", chat_id=chat_id)
-                
-                command = BotCommand(
-                    name="post",
-                    category=self._pending_category or "Tech",
-                    topic=self._pending_topic,
-                    count=max(self.default_count, 1),
-                    include_seen=False,
-                    posts=1,
-                    interval_minutes=0,
-                    is_thread=True,
-                    thread_length=self._pending_thread_length or 4
-                )
-                self._dispatch_command(command, chat_id)
-                return
-                
-            self._state = ConversationState.AWAITING_POST_COUNT
-            self.telegram.send_text(
-                "How many posts do you want to schedule?",
-                chat_id=chat_id,
-                reply_markup={"remove_keyboard": True}
-            )
-            return
-            
-        if self._state == ConversationState.AWAITING_POST_COUNT:
-            try:
-                self._pending_posts = int(text.strip())
-                if self._pending_posts < 1:
-                    raise ValueError()
-            except ValueError:
-                self.telegram.send_text("Please send a valid positive number for the post count.", chat_id=chat_id)
-                return
-                
-            if self._pending_posts == 1:
-                self._state = ConversationState.IDLE
-                topic_label = self._pending_topic or "Trending"
-                self.telegram.send_text(f"Scheduling 1 post about '{topic_label}'...", chat_id=chat_id)
-                
-                command = BotCommand(
-                    name="post",
-                    category=self._pending_category or "Tech",
-                    topic=self._pending_topic,
-                    count=max(self.default_count, 1),
-                    include_seen=False,
-                    posts=1,
-                    interval_minutes=0,
-                    is_thread=(self._pending_format == "thread"),
-                    thread_length=self._pending_thread_length or 4
-                )
-                self._dispatch_command(command, chat_id)
-                return
-
-            self._state = ConversationState.AWAITING_INTERVAL
-            self.telegram.send_text("How many minutes between each post?", chat_id=chat_id)
-            return
-            
-        if self._state == ConversationState.AWAITING_INTERVAL:
-            try:
-                interval = int(text.strip())
-                if interval < 0:
-                    raise ValueError()
-            except ValueError:
-                self.telegram.send_text("Please send a valid non-negative number for the interval.", chat_id=chat_id)
-                return
-                
+            # It's a fully formed command, execute it directly
             self._state = ConversationState.IDLE
-            topic_label = self._pending_topic or "Trending"
-            self.telegram.send_text(f"Scheduling {self._pending_posts} posts about '{topic_label}'...", chat_id=chat_id)
-            
-            internal_command_name = "autopost" if self._pending_posts > 1 else "post"
-            command = BotCommand(
-                name=internal_command_name,
-                category=self._pending_category or "Tech",
-                topic=self._pending_topic,
-                count=max(self.default_count, self._pending_posts),
-                include_seen=False,
-                posts=self._pending_posts,
-                interval_minutes=float(interval),
-                is_thread=(self._pending_format == "thread"),
-                thread_length=self._pending_thread_length or 4
-            )
+            self._dialog_slots = {"action": None, "topic": None, "count": None}
             self._dispatch_command(command, chat_id)
             return
 
-        if self._state == ConversationState.AWAITING_DRAFT_CATEGORY:
-            category = parse_category(text)
-            if not category:
-                self.telegram.send_text("Invalid category. Please select from the keyboard.", chat_id=chat_id)
-                return
-            if category.lower() == "other":
-                self.telegram.send_text("Please type the genre/category you want to use:", chat_id=chat_id, reply_markup={"remove_keyboard": True})
-                return
-            self._pending_category = category
-            self._state = ConversationState.AWAITING_DRAFT_TOPIC
-            
-            self.telegram.send_text("🔍 Scanning live news for trending topics...", chat_id=chat_id, reply_markup={"remove_keyboard": True})
-            topics_keyboard = get_topic_keyboard(category)
-            
-            self.telegram.send_text(
-                "What topic do you want to see drafts for? Tap a suggestion or type your own:",
-                chat_id=chat_id,
-                reply_markup=topics_keyboard
-            )
-            return
+        # Any conversational text/voice goes to Dialog Manager
+        self._handle_dialog(text, chat_id)
 
-        if self._state == ConversationState.AWAITING_DRAFT_TOPIC:
-            topic = text.strip()
-            
-            generic_words = {"news", "trending", "latest", "top", "updates", "today"}
-            topic_words = set(re.findall(r'[a-z0-9]+', topic.lower()))
-            cat_words = set(re.findall(r'[a-z0-9]+', self._pending_category.lower())) if self._pending_category else set()
-            
-            if not (topic_words - generic_words - cat_words):
-                self._pending_topic = None
-            else:
-                self._pending_topic = topic
-                
-            if self._pending_format == "thread":
-                self._state = ConversationState.IDLE
-                topic_label = self._pending_topic or "Trending"
-                self.telegram.send_text(f"Generating 1 thread draft about '{topic_label}'...", chat_id=chat_id)
-                
-                command = BotCommand(
-                    name="batch",
-                    category=self._pending_category or "Tech",
-                    topic=self._pending_topic,
-                    count=1,
-                    include_seen=False,
-                    posts=1,
-                    is_thread=True,
-                    thread_length=self._pending_thread_length or 4
-                )
-                self._dispatch_command(command, chat_id)
-                return
-                
-            self._state = ConversationState.AWAITING_DRAFT_COUNT
-            self.telegram.send_text(
-                "How many drafts do you want to generate?",
-                chat_id=chat_id,
-                reply_markup={"remove_keyboard": True}
-            )
-            return
-            
-        if self._state == ConversationState.AWAITING_DRAFT_COUNT:
-            try:
-                count = int(text.strip())
-                if count < 1:
-                    raise ValueError()
-            except ValueError:
-                self.telegram.send_text("Please send a valid positive number for the draft count.", chat_id=chat_id)
-                return
-                
-            self._state = ConversationState.IDLE
-            topic_label = self._pending_topic or "Trending"
-            self.telegram.send_text(f"Generating {count} drafts about '{topic_label}'...", chat_id=chat_id)
-            
-            command = BotCommand(
-                name="batch",
-                category=self._pending_category or "Tech",
-                topic=self._pending_topic,
-                count=count,
-                include_seen=False,
-                posts=1,
-                is_thread=(self._pending_format == "thread"),
-                thread_length=self._pending_thread_length or 4
-            )
-            self._dispatch_command(command, chat_id)
-            return
-
-    def _ask_category(self, chat_id: str) -> None:
-        self.telegram.send_text("🔍 Scanning global news for trending genres...", chat_id=chat_id, reply_markup={"remove_keyboard": True})
-        favorites = get_trending_genres(self.settings, limit=6)
-        category_keyboard = {
-            "keyboard": [
-                [{"text": favorites[i]}, {"text": favorites[i+1]} if i+1 < len(favorites) else {"text": "Other"}]
-                for i in range(0, len(favorites), 2)
-            ],
-            "resize_keyboard": True,
-            "one_time_keyboard": True
-        }
+    def _handle_dialog(self, text: str, chat_id: str) -> None:
+        self._state = ConversationState.DIALOG
+        self.telegram.send_text("🧠 Understanding context...", chat_id=chat_id)
         
-        self.telegram.send_text("Which category of news? Tap a button below:", chat_id=chat_id, reply_markup=category_keyboard)
+        from twitter_automation_agent.llm import LLMClient
+        llm = LLMClient(self.settings)
+        
+        try:
+            result = llm.dialog_manager_step(self._dialog_slots, text)
+        except Exception as e:
+            self.telegram.send_text(f"Error communicating with LLM: {e}", chat_id=chat_id)
+            return
+            
+        self._dialog_slots = result.get("updated_slots", self._dialog_slots)
+        reply = result.get("reply")
+        
+        if reply:
+            self.telegram.send_text(reply, chat_id=chat_id)
+            return
+            
+        action = self._dialog_slots.get("action")
+        topic = self._dialog_slots.get("topic")
+        count = self._dialog_slots.get("count")
+        
+        if not action or not topic or (action == "thread" and not count):
+            self.telegram.send_text("I need more details (tweet/thread, topic, and count if thread).", chat_id=chat_id)
+            return
+            
+        # All slots are strictly filled!
+        
+        self._state = ConversationState.IDLE
+        self._dialog_slots = {"action": None, "topic": None, "count": None}
+        
+        self.telegram.send_text(f"Scheduling 1 {action} about '{topic}'...", chat_id=chat_id)
+        
+        command = BotCommand(
+            name="post",
+            category="Tech",
+            topic=topic,
+            count=max(self.default_count, 1),
+            include_seen=False,
+            posts=1,
+            interval_minutes=0,
+            is_thread=(action == "thread"),
+            thread_length=count or 4
+        )
+        self._dispatch_command(command, chat_id)
+
+
 
     def _dispatch_command(self, command: BotCommand, chat_id: str) -> None:
         if self._busy:
@@ -637,8 +400,10 @@ class TelegramCommandBot:
     def _run_post(self, command: BotCommand, chat_id: str) -> None:
         topic_label = command.topic or f"trending {command.category.lower()} news"
         style = command.style or self.settings.default_style
+        format_label = "thread" if command.is_thread else "tweet"
+        
         self.telegram.send_text(
-            f"Drafting and auto-posting 1 tweet for {topic_label} on your PC...",
+            f"Drafting and auto-posting 1 {format_label} for {topic_label} on your PC...",
             chat_id=chat_id,
         )
 
@@ -659,7 +424,7 @@ class TelegramCommandBot:
             return
 
         self.telegram.send_text(
-            f"✅ Done! Successfully posted the tweet to X from your PC.",
+            f"✅ Done! Successfully posted the {format_label} to X from your PC.",
             chat_id=chat_id,
         )
 

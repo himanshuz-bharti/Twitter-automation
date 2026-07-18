@@ -59,6 +59,30 @@ class TelegramSender:
         chat_id = str(chat.get("id")) if chat.get("id") is not None else chat_label
         return bot_username, chat_id
 
+    def get_file_path(self, file_id: str) -> str:
+        """Get the file path from Telegram using the file_id."""
+        response = self._request("getFile", json={"file_id": file_id})
+        data = response.json()
+        result = data.get("result", {})
+        file_path = result.get("file_path")
+        if not file_path:
+            raise RuntimeError("Telegram API did not return a file_path.")
+        return file_path
+
+    def download_file(self, file_path: str) -> bytes:
+        """Download the file from Telegram."""
+        token = self.settings.telegram_bot_token
+        if not token:
+            raise RuntimeError("Telegram bot token is missing.")
+            
+        url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+        try:
+            response = httpx.get(url, timeout=self.timeout, trust_env=False)
+            response.raise_for_status()
+            return response.content
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"Failed to download file from Telegram: {exc}") from exc
+
     def send_draft(
         self,
         item: DraftItem,

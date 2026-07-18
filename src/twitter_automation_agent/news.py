@@ -339,7 +339,7 @@ def _is_similar(a1: Article, a2: Article) -> bool:
     
     return overlap > 0.35 or (len(intersection) >= 4 and overlap > 0.20)
 
-def article_relevance_score(article: Article, topic: str | None, cluster_size: int = 1) -> float:
+def article_relevance_score(article: Article, topic: str | None, cluster_size: int = 1, lookback_hours: int = 24) -> float:
     haystack = _story_haystack(article)
     score = 0.0
 
@@ -359,6 +359,12 @@ def article_relevance_score(article: Article, topic: str | None, cluster_size: i
             (datetime.now(UTC) - article.published_at.astimezone(UTC)).total_seconds() / 3600,
         )
         score += max(0.0, 15.0 - age_hours) / 2.0
+        # Soft hierarchy: massively prioritize articles within the lookback window
+        if age_hours <= lookback_hours:
+            score += 50.0
+        # Slight penalty for very old articles to keep them at the bottom
+        elif age_hours > lookback_hours * 2:
+            score -= (age_hours / 24.0)
 
     return score
 
@@ -394,7 +400,7 @@ def get_trending_genres(settings: Settings, limit: int = 6) -> list[str]:
     if not headlines:
         return ["Tech", "Finance", "Politics", "Entertainment", "Sports", "World"]
 
-    llm = LLMClient(settings, timeout=30.0)
+    llm = LLMClient(settings, timeout=180.0)
     prompt = f"""Analyze these recent global news headlines.
 Cluster them into exactly {limit} broad, distinct news genres or categories that are trending right now. 
 Keep the genre names strictly 1 or 2 words max (e.g., "Technology", "Politics", "Crypto", "Entertainment", "Sports").
@@ -427,7 +433,7 @@ Example JSON:
     return ["Tech", "Finance", "Politics", "Entertainment", "Sports", "World"]
 
 class NewsCollector:
-    def __init__(self, settings: Settings, timeout: float = 20.0) -> None:
+    def __init__(self, settings: Settings, timeout: float = 180.0) -> None:
         self.settings = settings
         self.timeout = timeout
         self.llm = LLMClient(settings, timeout)
@@ -532,7 +538,7 @@ class NewsCollector:
 
     def collect_from_apis(self, topic: str | None, lookback_hours: int, limit: int, category: str = "Tech") -> list[Article]:
         cutoff = datetime.now(UTC) - timedelta(hours=lookback_hours)
-        query = f"{topic} {category} news" if topic else f"{category} breaking news"
+        query = f"{topic} news" if topic else f"{category} breaking news"
         
         api_articles = self._collect_newsdata(query, limit)
         if not api_articles:
@@ -543,8 +549,6 @@ class NewsCollector:
         valid = []
         cluster_sizes = {}
         for article in api_articles:
-            if article.published_at and article.published_at < cutoff:
-                continue
             if is_category_article(article, topic, category):
                 valid.append(article)
                 cluster_sizes[_fingerprint(article.title)] = 1
@@ -554,6 +558,7 @@ class NewsCollector:
                 article,
                 topic,
                 cluster_size=cluster_sizes.get(_fingerprint(article.title), 1),
+                lookback_hours=lookback_hours,
             )
         valid.sort(key=lambda item: item.score, reverse=True)
         return valid[:limit]
@@ -577,6 +582,7 @@ class NewsCollector:
                 article,
                 topic,
                 cluster_size=cluster_sizes.get(_fingerprint(article.title), 1),
+                lookback_hours=lookback_hours,
             )
 
 
@@ -586,7 +592,7 @@ key=lambda item: item.score, reverse=True)
         return deduped[:limit]
 
     def _collect_ddgs(self, topic: str | None, lookback_hours: int, category: str) -> list[Article]:
-        subject = f"{topic} in {category}" if topic else category
+        subject = topic if topic else category
         queries = self._llm_search_queries(subject)
         if not queries:
             queries = [f"{category} news today"]
@@ -610,8 +616,6 @@ key=lambda item: item.score, reverse=True)
                     try:
                         from dateutil.parser import parse
                         pub_date = parse(date_str).astimezone(UTC)
-                        if pub_date < cutoff:
-                            continue
                     except Exception:
                         pub_date = datetime.now(UTC)
                         
@@ -669,10 +673,10 @@ Example Execution for category 'Entertainment':
             return []
 
     def _feed_urls(self, topic: str | None, lookback_hours: int, category: str) -> list[str]:
-        subject = f"{topic} in {category}" if topic else category
+        subject = topic if topic else category
         queries = self._llm_search_queries(subject)
         
-        fallback_query = f"{topic} {category} news today" if topic else f"{category} updates today"
+        fallback_query = f"{topic} news today" if topic else f"{category} updates today"
         if not queries or len(queries) < 2:
             if topic:
                 queries = [f"{topic} news today", f"latest {topic} updates", f"breaking {topic} news"]
@@ -728,8 +732,6 @@ Example Execution for category 'Entertainment':
             publisher = feed_publisher or _publisher_from_title(raw_title)
             title = _clean_title(raw_title)
             published_at = _entry_datetime(entry)
-            if published_at and published_at < cutoff:
-                continue
 
             summary = BeautifulSoup(entry.get("summary", ""), "html.parser").get_text(" ")
             cleaned_summary = _clean_summary(summary, title, publisher)
@@ -773,14 +775,31 @@ Example Execution for category 'Entertainment':
             return True
             
         try:
+            url_to_fetch = str(article.resolved_url or article.url)
             response = httpx.get(
-                str(article.resolved_url or article.url),
+                url_to_fetch,
                 timeout=self.timeout,
                 follow_redirects=True,
                 headers={"User-Agent": "Mozilla/5.0 TwitterAutomationAgent/0.1"},
                 trust_env=False,
             )
             response.raise_for_status()
+            
+            # Google News RSS returns a proxy page. We must extract the real URL and follow it.
+            if "news.google.com/rss/articles/" in url_to_fetch:
+                import re
+                match = re.search(r'<a[^>]+href="([^"]+)"', response.text)
+                if match:
+                    real_url = match.group(1)
+                    if real_url.startswith("http"):
+                        response = httpx.get(
+                            real_url,
+                            timeout=self.timeout,
+                            follow_redirects=True,
+                            headers={"User-Agent": "Mozilla/5.0 TwitterAutomationAgent/0.1"},
+                            trust_env=False,
+                        )
+                        response.raise_for_status()
             
             soup = BeautifulSoup(response.text, "html.parser")
             

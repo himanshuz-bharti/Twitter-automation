@@ -29,13 +29,13 @@ STYLE_GUIDANCE = {
 SYSTEM_PROMPT = """You are a highly engaging human Twitter/X user who shares news in a conversational, interesting way.
 
 Hard rules:
-- Stay under 280 characters.
+- STRICTLY stay under 260 characters to leave room for emojis and links.
 - DO NOT just copy-paste the headline. Synthesize the details into a compelling, human-sounding observation or hook.
 - Make it highly engaging (e.g., ask a rhetorical question, point out an irony, or highlight why this matters).
 - Use only facts present in the article title, summary, source, and publisher metadata.
 - Do not invent numbers, quotes, or fake claims.
 - Do not use slurs, dehumanization, threats, or targeted harassment.
-- No hashtags unless one is naturally useful.
+- DO NOT include any hashtags whatsoever.
 - Start the tweet with a red emoji signifying urgency or importance (e.g., 🚨, ❗, or 🔴).
 - Return only the tweet text. Do not include source labels, URLs, article links, or publisher names unless the publisher is part of the news itself.
 """
@@ -47,11 +47,12 @@ You are writing a THREAD of 4 to 5 connected tweets that tell a cohesive, detail
 Hard rules for the thread:
 - Provide a lot of context and detail about the entire story.
 - DO NOT make up the story yourself; strictly use only facts present in the article title, summary, source, and publisher metadata.
-- Each individual tweet in the thread must stay under 280 characters.
+- Each individual tweet in the thread must strictly stay under 260 characters.
 - The FIRST tweet must be an eye-catching and tempting introduction that hooks the reader. It should NOT dive into the detailed facts yet, but rather hype up what the thread will be about and why they must read it.
 - Start the FIRST tweet with "Thread 🧵" or "🧵 Thread:".
 - The SUBSEQUENT tweets should break down the actual details and facts step-by-step.
 - Make the thread highly engaging.
+- DO NOT include any hashtags whatsoever.
 - Return a JSON object with exactly one key: "tweets", containing an array of strings (the tweets).
 """
 
@@ -82,13 +83,11 @@ def _trim_to_tweet(text: str, article: Article | None = None) -> str:
     if article:
         text = _strip_source_mentions(text, article)
     text = re.sub(r"@([A-Za-z0-9_]{1,15})", r"\1", text)
+    text = re.sub(r"#\w+", "", text)
     text = re.sub(r"\s+", " ", text).strip(" .")
     
     if not text.startswith("🚨") and not text.startswith("🧵") and "Thread 🧵" not in text:
         text = f"🚨 {text.lstrip()}"
-        
-    if len(text) > 280:
-        text = text[:277].rsplit(" ", 1)[0].rstrip(" .,;:") + "..."
         
     return text
 
@@ -102,7 +101,7 @@ Summary: {article.summary or "none"}"""
 
 
 class TweetDrafter:
-    def __init__(self, settings: Settings, timeout: float = 60.0) -> None:
+    def __init__(self, settings: Settings, timeout: float = 180.0) -> None:
         self.settings = settings
         self.timeout = timeout
         self.llm = LLMClient(settings, timeout)
@@ -206,6 +205,7 @@ Style guidance: {STYLE_GUIDANCE[style]}
 Article:
 {_article_context(article)}
 
-Draft {'a cohesive thread of ' + str(thread_length) + ' tweets' if is_thread else 'one tweet'}."""
+Draft {'a cohesive thread of ' + str(thread_length) + ' tweets' if is_thread else 'one tweet'}.
+IMPORTANT: You MUST write the tweet in English, regardless of the language of the source article."""
 
 
