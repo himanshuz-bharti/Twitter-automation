@@ -33,7 +33,7 @@ class ImageSuggestion(BaseModel):
 
 
 class TweetDraft(BaseModel):
-    text: str = Field(..., max_length=280)
+    text: str = Field(..., max_length=400)
     is_thread: bool = False
     thread_texts: list[str] = Field(default_factory=list)
     style: DraftStyle

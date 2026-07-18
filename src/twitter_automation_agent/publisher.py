@@ -16,7 +16,7 @@ class XPublisher:
         """
         return "system_browser", "ready"
 
-    def post(self, text: str, image_paths: list[str] | None = None, thread_texts: list[str] | None = None, telegram_sender=None) -> str:
+    def post(self, text: str, image_paths: list[str] | None = None, thread_texts: list[str] | None = None, telegram_sender=None, reply_to_id: str | None = None, quote_url: str | None = None, is_first: bool = False) -> str:
         """
         Automates the Twitter web interface using the foolproof Intent URL method.
         This opens a new tab in the user's ACTUAL default browser where they are already logged in.
@@ -25,6 +25,10 @@ class XPublisher:
         encoded_text = urllib.parse.quote(text)
         
         intent_url = f"https://x.com/intent/tweet?text={encoded_text}"
+        if reply_to_id:
+            intent_url += f"&in_reply_to={reply_to_id}"
+        if quote_url:
+            intent_url += f"&url={urllib.parse.quote(str(quote_url))}"
         
         print("\n\n[SUCCESS] Opening X.com in your default system browser!")
         print("Your tweet has been automatically pasted into the box.")
@@ -50,9 +54,13 @@ class XPublisher:
             import pyautogui
             import subprocess
             
-            print("\n[AUTOMATION] Please do not touch your mouse/keyboard for 10 seconds...")
-            # Wait 10 seconds for the Chrome tab to fully open and load the X.com compose box
-            time.sleep(10)
+            if is_first:
+                sleep_time = 28 if reply_to_id else 22
+            else:
+                sleep_time = 15 if (reply_to_id or quote_url) else 10
+            print(f"\n[AUTOMATION] Please do not touch your mouse/keyboard for {sleep_time} seconds...")
+            # Wait for the Chrome tab to fully open and load the X.com compose box
+            time.sleep(sleep_time)
             
             if image_paths:
                 # Copy the actual image data (pixels) into the Windows clipboard
