@@ -89,3 +89,17 @@ def validate_tweet_text(text: str, article: Article) -> tuple[bool, str | None]:
         return False, f"Tweet includes unsupported numeric claims: {', '.join(unsupported_numbers)}"
 
     return True, None
+
+
+def validate_debate_tweet(text: str, article: Article) -> tuple[bool, str | None]:
+    # X/Twitter URL shortening maps all URLs to 23 characters
+    cleaned_text = re.sub(r"https?://\S+", "x" * 23, text)
+    if len(cleaned_text) > 260:
+        return False, f"Tweet exceeds 260 characters (X length: {len(cleaned_text)})."
+
+    lowered = text.lower()
+    for pattern in DISALLOWED_PATTERNS:
+        if re.search(pattern, lowered):
+            return False, f"Tweet matched disallowed pattern: {pattern}"
+
+    return True, None

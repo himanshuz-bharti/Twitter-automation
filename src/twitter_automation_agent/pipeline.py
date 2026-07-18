@@ -17,6 +17,8 @@ from twitter_automation_agent.models import BatchPipelineResult, DraftItem, Draf
 from twitter_automation_agent.news import NewsCollector
 from twitter_automation_agent.publisher import XPublisher
 from twitter_automation_agent.telegram import TelegramSender
+from twitter_automation_agent.scraper import XScraper
+
 
 HttpUrlAdapter = TypeAdapter(HttpUrl)
 HistoryScope = Literal["drafted", "posted", "sent"]
@@ -387,3 +389,129 @@ class Pipeline:
                 Path(suggestion.path).unlink(missing_ok=True)
             except OSError:
                 pass
+
+    def run_debate(
+        self,
+        category: str | None,
+        style: DraftStyle,
+        output_dir: Path,
+        count: int = 3,
+        post: bool = False,
+        skip_history: bool = True,
+        record_history: bool = True,
+        reply: bool = False,
+        mix: bool = False,
+        stance: str = "contradict",
+    ) -> BatchPipelineResult:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        history = self._load_history(output_dir) if skip_history else self._empty_history()
+
+        print(f"[DEBUG] Scraping viral tweets for category: {category or 'Global Trends'}...")
+        scraper = XScraper(self.settings)
+        scraped_tweets = scraper.scrape_top_tweets(category=category, limit=max(count * 3, 12))
+
+        # Do not filter by history for debate mode to always allow seen tweets
+        fresh_tweets = scraped_tweets
+
+        drafts: list[DraftItem] = []
+        has_posted = False
+
+        for article in fresh_tweets:
+            if len(drafts) >= count:
+                break
+
+            action_label = "direct-reply" if reply else "quote-tweet"
+            print(f"[DEBUG] Drafting {action_label} response for: {article.publisher}")
+            try:
+                draft = self.drafter.draft_debate(article, style, reply=True, stance=stance)
+            except Exception as e:
+                safe_err = str(e).encode('ascii', errors='replace').decode('ascii')
+                print(f"[DEBUG] Skipping tweet due to LLM failure: {safe_err}")
+                continue
+
+            item = DraftItem(article=article, draft=draft)
+
+            if post:
+                if mix:
+                    print(f"[DEBUG] Attempting to post direct-reply AND quote-tweet to X...")
+                    match = re.search(r'/status/(\d+)', str(article.url))
+                    reply_to_id = match.group(1) if match else None
+
+                    # 1. Post direct reply
+                    print(f"[DEBUG] [MIX] Posting direct-reply...")
+                    item.post_id = self.publisher.post(
+                        text=draft.text,
+                        image_paths=None,
+                        thread_texts=None,
+                        telegram_sender=self.telegram,
+                        reply_to_id=reply_to_id,
+                        quote_url=None,
+                        is_first=(len(drafts) == 0),
+                    )
+
+                    # Wait 18 seconds before opening the quote intent
+                    print(f"[DEBUG] [MIX] Waiting 18 seconds before quote-tweet...")
+                    time.sleep(18)
+
+                    # 2. Post quote tweet
+                    print(f"[DEBUG] [MIX] Posting quote-tweet...")
+                    self.publisher.post(
+                        text=draft.text,
+                        image_paths=None,
+                        thread_texts=None,
+                        telegram_sender=self.telegram,
+                        reply_to_id=None,
+                        quote_url=article.url,
+                        is_first=False,
+                    )
+                    item.posted = True
+
+                    # If there are more drafts/tweets to process in the batch, wait another 18 seconds
+                    if len(drafts) + 1 < count:
+                        print(f"[DEBUG] [MIX] Waiting 18 seconds before the next tweet...")
+                        time.sleep(18)
+                else:
+                    print(f"[DEBUG] Attempting to post {action_label} to X...")
+                    reply_to_id = None
+                    quote_url = None
+                    if reply:
+                        match = re.search(r'/status/(\d+)', str(article.url))
+                        reply_to_id = match.group(1) if match else None
+                    else:
+                        quote_url = article.url
+
+                    item.post_id = self.publisher.post(
+                        text=draft.text,
+                        image_paths=None,
+                        thread_texts=None,
+                        telegram_sender=self.telegram,
+                        reply_to_id=reply_to_id,
+                        quote_url=quote_url,
+                        is_first=(len(drafts) == 0),
+                    )
+                    item.posted = True
+                    
+                    # If there are more drafts to post, wait 18 seconds to allow PyAutoGUI to finish
+                    if len(drafts) + 1 < count:
+                        print(f"[DEBUG] Waiting 18 seconds before opening the next post intent...")
+                        time.sleep(18)
+
+            drafts.append(item)
+
+        if not drafts:
+            raise RuntimeError(f"Failed to generate any debate drafts for category: {category or 'Global Trends'}.")
+
+        result = BatchPipelineResult(
+            topic=f"Debate: {category or 'Global Trends'}",
+            generated_at=datetime.now(UTC),
+            candidates=scraped_tweets,
+            drafts=drafts,
+        )
+
+        if not post:
+            self._write_result(result, output_dir)
+
+        if record_history:
+            self._append_history(output_dir, drafts, "posted" if post else "drafted")
+
+        return result

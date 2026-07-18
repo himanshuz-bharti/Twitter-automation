@@ -18,6 +18,10 @@ from twitter_automation_agent.telegram import TelegramSender
 HELP_TEXT = """Commands:
 /topic <topic> [count] - send drafts for a topic
 /trending [count] - send trending tech drafts
+/debate - interactively scrape viral tweets & draft counter-arguments
+/reply - interactively scrape viral tweets & post direct replies to X
+/quote - interactively scrape viral tweets & post quote-tweets to X
+/mix - interactively scrape viral tweets & post both direct reply AND quote-tweet to X
 /post <topic> [--posts <num>] [--interval <mins>] - instantly post or schedule multiple tweets
 /draft - interactively generate drafts for a topic
 /status - check that the bot is alive
@@ -25,11 +29,14 @@ HELP_TEXT = """Commands:
 /help - show this message
 
 Examples:
+/debate
+/reply
+/quote
+/mix
 /topic Microsoft 3
 /post "AI models"
 /post "Nvidia" --posts 3 --interval 60
-/trending 3
-""".strip()
+/trending 3""".strip()
 
 
 class ConversationState(Enum):
@@ -45,6 +52,9 @@ class ConversationState(Enum):
     AWAITING_DRAFT_CATEGORY = auto()
     AWAITING_DRAFT_TOPIC = auto()
     AWAITING_DRAFT_COUNT = auto()
+    AWAITING_DEBATE_TOPIC = auto()
+    AWAITING_DEBATE_COUNT = auto()
+    AWAITING_DEBATE_STANCE = auto()
     DIALOG = auto()
 
 
@@ -60,6 +70,7 @@ class BotCommand:
     interval_minutes: float = 90.0
     is_thread: bool = False
     thread_length: int = 4
+    stance: str = "contradict"
 
 
 class TelegramCommandBot:
@@ -89,6 +100,9 @@ class TelegramCommandBot:
         self._pending_posts: int | None = None
         self._pending_format: str | None = None
         self._pending_thread_length: int | None = None
+        self._pending_command: str | None = None
+        self._pending_debate_topic: str | None = None
+        self._pending_debate_count: int | None = None
         self._dialog_slots = {"action": None, "topic": None, "count": None}
 
     def listen(self) -> None:
@@ -168,6 +182,8 @@ class TelegramCommandBot:
             self._pending_posts = None
             self._pending_format = None
             self._pending_thread_length = None
+            self._pending_command = None
+            self._pending_debate_topic = None
             self._dialog_slots = {"action": None, "topic": None, "count": None}
             self.telegram.send_text("Conversation cancelled.", chat_id=chat_id)
             return
@@ -211,6 +227,25 @@ class TelegramCommandBot:
                     self._state = ConversationState.AWAITING_DRAFT_FORMAT
                     self.telegram.send_text("Do you want to create a single Post or a Thread?", chat_id=chat_id, reply_markup=keyboard)
                     return
+
+            if command.name in {"debate", "reply", "quote", "mix"}:
+                self._pending_command = command.name
+                self._state = ConversationState.AWAITING_DEBATE_TOPIC
+                keyboard = {
+                    "keyboard": [
+                        [{"text": "Skip / Global Trends"}],
+                        [{"text": "AI"}, {"text": "Crypto"}],
+                        [{"text": "Tech"}, {"text": "Finance"}]
+                    ],
+                    "resize_keyboard": True,
+                    "one_time_keyboard": True
+                }
+                self.telegram.send_text(
+                    "💬 Enter a topic/category to search (e.g. AI, Crypto, Tech), or tap 'Skip / Global Trends' to search general trends:",
+                    chat_id=chat_id,
+                    reply_markup=keyboard
+                )
+                return
                     
             if self._busy:
                 self.telegram.send_text(
@@ -219,11 +254,7 @@ class TelegramCommandBot:
                 )
                 return
 
-            self._busy = True
-            try:
-                self._dispatch_command(command, chat_id)
-            finally:
-                self._busy = False
+            self._dispatch_command(command, chat_id)
             return
 
         # Any conversational text/voice goes to Dialog Manager
@@ -348,6 +379,79 @@ class TelegramCommandBot:
                 interval_minutes=interval,
             )
 
+        if raw_name in {"/debate", "debate"}:
+            category = None
+            parsed_count = self.default_count
+            if args:
+                if args[-1].isdigit():
+                    parsed_count = self._parse_count(args[-1])
+                    category_parts = args[:-1]
+                else:
+                    category_parts = args
+                if category_parts:
+                    category = " ".join(category_parts).strip() or None
+            return BotCommand(
+                name="debate",
+                category=category,
+                count=parsed_count,
+                include_seen=include_seen,
+            )
+
+
+        if raw_name in {"/reply", "reply"}:
+            category = None
+            parsed_count = self.default_count
+            if args:
+                if args[-1].isdigit():
+                    parsed_count = self._parse_count(args[-1])
+                    category_parts = args[:-1]
+                else:
+                    category_parts = args
+                if category_parts:
+                    category = " ".join(category_parts).strip() or None
+            return BotCommand(
+                name="reply",
+                category=category,
+                count=parsed_count,
+                include_seen=include_seen,
+            )
+
+        if raw_name in {"/quote", "quote"}:
+            category = None
+            parsed_count = self.default_count
+            if args:
+                if args[-1].isdigit():
+                    parsed_count = self._parse_count(args[-1])
+                    category_parts = args[:-1]
+                else:
+                    category_parts = args
+                if category_parts:
+                    category = " ".join(category_parts).strip() or None
+            return BotCommand(
+                name="quote",
+                category=category,
+                count=parsed_count,
+                include_seen=include_seen,
+            )
+
+        if raw_name in {"/mix", "mix", "/both", "both"}:
+            category = None
+            parsed_count = self.default_count
+            if args:
+                if args[-1].isdigit():
+                    parsed_count = self._parse_count(args[-1])
+                    category_parts = args[:-1]
+                else:
+                    category_parts = args
+                if category_parts:
+                    category = " ".join(category_parts).strip() or None
+            return BotCommand(
+                name="mix",
+                category=category,
+                count=parsed_count,
+                include_seen=include_seen,
+            )
+
         if raw_name in {"/draft", "draft"}:
             return BotCommand(name="interactive_draft")
 
@@ -398,12 +502,25 @@ class TelegramCommandBot:
         return count
 
     def _run_batch(self, command: BotCommand, chat_id: str) -> None:
+        if command.name == "debate":
+            self._run_debate(command, chat_id)
+            return
+        if command.name == "reply":
+            self._run_reply(command, chat_id)
+            return
+        if command.name == "quote":
+            self._run_quote(command, chat_id)
+            return
+        if command.name == "mix":
+            self._run_mix(command, chat_id)
+            return
         if command.name == "post":
             self._run_post(command, chat_id)
             return
         if command.name == "autopost":
             self._run_autopost(command, chat_id)
             return
+
 
         topic_label = command.topic or f"trending {command.category.lower()} news"
         style = command.style or self.settings.default_style
@@ -499,6 +616,129 @@ class TelegramCommandBot:
             chat_id=chat_id,
         )
 
+    def _run_debate(self, command: BotCommand, chat_id: str) -> None:
+        style = command.style or self.settings.default_style
+        category_label = command.category or "Global Trends"
+        self.telegram.send_text(
+            f"Scraping viral tweets in '{category_label}' and drafting counter-arguments...",
+            chat_id=chat_id,
+        )
+        try:
+            result = Pipeline(self.settings).run_debate(
+                category=command.category,
+                style=style,
+                output_dir=self.output_dir,
+                count=command.count,
+                post=False,
+                skip_history=not command.include_seen,
+                stance=command.stance,
+            )
+            stance_label = "Support" if command.stance == "support" else "Contradict"
+            for item in result.drafts:
+                self.telegram.send_draft(item, chat_id=chat_id, prefix=f"💬 Draft Quote Tweet ({stance_label}) for: {item.article.url}")
+        except Exception as exc:
+            self.telegram.send_text(f"Debate failed: {exc}", chat_id=chat_id)
+            return
+
+        self.telegram.send_text(
+            f"✅ Done! Sent {len(result.drafts)} debate draft(s) ({stance_label.lower()}) for '{category_label}'.",
+            chat_id=chat_id,
+        )
+
+
+    def _run_reply(self, command: BotCommand, chat_id: str) -> None:
+        style = command.style or self.settings.default_style
+        category_label = command.category or "Global Trends"
+        self.telegram.send_text(
+            f"Scraping viral tweets in '{category_label}' and preparing to post direct replies...",
+            chat_id=chat_id,
+        )
+        try:
+            result = Pipeline(self.settings).run_debate(
+                category=command.category,
+                style=style,
+                output_dir=self.output_dir,
+                count=command.count,
+                post=True,
+                skip_history=not command.include_seen,
+                reply=True,
+                stance=command.stance,
+            )
+            stance_label = "Support" if command.stance == "support" else "Contradict"
+            for item in result.drafts:
+                self.telegram.send_draft(item, chat_id=chat_id, prefix=f"💬 Reply ({stance_label}) to: {item.article.url}")
+        except Exception as exc:
+            self.telegram.send_text(f"Reply failed: {exc}", chat_id=chat_id)
+            return
+
+        self.telegram.send_text(
+            f"✅ Finished! Successfully posted {len(result.drafts)} reply/replies ({stance_label.lower()}) to X for '{category_label}'.",
+            chat_id=chat_id,
+        )
+
+    def _run_quote(self, command: BotCommand, chat_id: str) -> None:
+        style = command.style or self.settings.default_style
+        category_label = command.category or "Global Trends"
+        self.telegram.send_text(
+            f"Scraping viral tweets in '{category_label}' and preparing to post quote-tweets...",
+            chat_id=chat_id,
+        )
+        try:
+            result = Pipeline(self.settings).run_debate(
+                category=command.category,
+                style=style,
+                output_dir=self.output_dir,
+                count=command.count,
+                post=True,
+                skip_history=not command.include_seen,
+                reply=False,
+                stance=command.stance,
+            )
+            stance_label = "Support" if command.stance == "support" else "Contradict"
+            for item in result.drafts:
+                self.telegram.send_draft(item, chat_id=chat_id, prefix=f"💬 Quote ({stance_label}) of: {item.article.url}")
+        except Exception as exc:
+            self.telegram.send_text(f"Quote failed: {exc}", chat_id=chat_id)
+            return
+
+        self.telegram.send_text(
+            f"✅ Finished! Successfully posted {len(result.drafts)} quote-tweet(s) ({stance_label.lower()}) to X for '{category_label}'.",
+            chat_id=chat_id,
+        )
+
+    def _run_mix(self, command: BotCommand, chat_id: str) -> None:
+        style = command.style or self.settings.default_style
+        category_label = command.category or "Global Trends"
+        self.telegram.send_text(
+            f"Scraping viral tweets in '{category_label}' and preparing to post direct replies AND quote-tweets...",
+            chat_id=chat_id,
+        )
+        try:
+            result = Pipeline(self.settings).run_debate(
+                category=command.category,
+                style=style,
+                output_dir=self.output_dir,
+                count=command.count,
+                post=True,
+                skip_history=not command.include_seen,
+                reply=False,
+                mix=True,
+                stance=command.stance,
+            )
+            stance_label = "Support" if command.stance == "support" else "Contradict"
+            for item in result.drafts:
+                self.telegram.send_draft(item, chat_id=chat_id, prefix=f"💬 Reply & Quote ({stance_label}) for: {item.article.url}")
+        except Exception as exc:
+            self.telegram.send_text(f"Mix failed: {exc}", chat_id=chat_id)
+            return
+
+        self.telegram.send_text(
+            f"✅ Finished! Successfully posted {len(result.drafts)} reply-and-quote pairs ({stance_label.lower()}) to X for '{category_label}'.",
+            chat_id=chat_id,
+        )
+
+
+
     def _handle_stateful_message(self, text: str, chat_id: str) -> None:
         def parse_category(val: str) -> str:
             return val.strip().title()
@@ -519,6 +759,72 @@ class TelegramCommandBot:
                 "resize_keyboard": True,
                 "one_time_keyboard": True
             }
+
+        if self._state == ConversationState.AWAITING_DEBATE_TOPIC:
+            val = text.strip()
+            if val.lower() in {"skip / global trends", "skip", "none", "all", "global"}:
+                self._pending_debate_topic = None
+            else:
+                self._pending_debate_topic = val
+            
+            self._state = ConversationState.AWAITING_DEBATE_COUNT
+            self.telegram.send_text(
+                "🔢 How many counter-argument drafts/posts do you want to generate? (Send a number between 1 and 10):",
+                chat_id=chat_id,
+                reply_markup={"remove_keyboard": True}
+            )
+            return
+
+        if self._state == ConversationState.AWAITING_DEBATE_COUNT:
+            try:
+                count = int(text.strip())
+                if count < 1 or count > 10:
+                    raise ValueError()
+            except ValueError:
+                self.telegram.send_text("Please send a valid positive number between 1 and 10 for the count.", chat_id=chat_id)
+                return
+            
+            self._pending_debate_count = count
+            self._state = ConversationState.AWAITING_DEBATE_STANCE
+            keyboard = {
+                "keyboard": [
+                    [{"text": "Support"}],
+                    [{"text": "Contradict"}]
+                ],
+                "resize_keyboard": True,
+                "one_time_keyboard": True
+            }
+            self.telegram.send_text(
+                "⚖️ Would you like to Support or Contradict the tweets?",
+                chat_id=chat_id,
+                reply_markup=keyboard
+            )
+            return
+
+        if self._state == ConversationState.AWAITING_DEBATE_STANCE:
+            val = text.strip().lower()
+            if val not in {"support", "contradict"}:
+                self.telegram.send_text("Please select either 'Support' or 'Contradict'.", chat_id=chat_id)
+                return
+            
+            self._state = ConversationState.IDLE
+            command_name = self._pending_command or "debate"
+            
+            command = BotCommand(
+                name=command_name,
+                category=self._pending_debate_topic,
+                count=self._pending_debate_count,
+                include_seen=False,
+                stance=val,
+            )
+            
+            # Reset pending state
+            self._pending_command = None
+            self._pending_debate_topic = None
+            self._pending_debate_count = None
+            
+            self._dispatch_command(command, chat_id)
+            return
 
         if self._state in {ConversationState.AWAITING_POST_FORMAT, ConversationState.AWAITING_DRAFT_FORMAT}:
             format_choice = text.strip().lower()
@@ -785,14 +1091,5 @@ class TelegramCommandBot:
         
         self.telegram.send_text("Which category of news? Tap a button below:", chat_id=chat_id, reply_markup=category_keyboard)
 
-    def _dispatch_command(self, command: BotCommand, chat_id: str) -> None:
-        if self._busy:
-            self.telegram.send_text("A batch is already running. Please wait for it to finish.", chat_id=chat_id)
-            return
-            
-        self._busy = True
-        try:
-            self._run_batch(command, chat_id)
-        finally:
-            self._busy = False
+
 

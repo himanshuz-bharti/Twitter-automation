@@ -248,7 +248,55 @@ def telegram_bot(
     ).listen()
 
 
+@app.command("debate")
+def debate(
+    category: str | None = typer.Option(None, help="Broad news category to search on X (e.g. Tech, AI, Finance). Omit to search global trending tweets."),
+    style: DraftStyle | None = typer.Option(None, help="Drafting style."),
+    count: int = typer.Option(3, min=1, max=10, help="Number of debate drafts to generate."),
+    output_dir: Path = typer.Option(Path("outputs"), help="Directory for draft bundles."),
+    include_seen: bool = typer.Option(False, help="Allow tweets generated in previous runs."),
+    post: bool = typer.Option(False, help="Post the quote tweet automatically to X."),
+    reply: bool = typer.Option(False, help="Reply directly to the tweet instead of quote tweeting."),
+    stance: str = typer.Option("contradict", help="Stance on the tweet. Can be 'contradict' or 'support'."),
+) -> None:
+    """Scrape viral tweets in a category (or global trends), formulate a counter-argument/hot take, and draft Quote Tweets or direct replies."""
+    load_dotenv()
+    settings = get_settings()
+    selected_style = style or settings.default_style
+
+    pipeline = Pipeline(settings)
+    result = pipeline.run_debate(
+        category=category,
+        style=selected_style,
+        output_dir=output_dir,
+        count=count,
+        post=post,
+        skip_history=not include_seen,
+        reply=reply,
+        stance=stance,
+    )
+
+    action_label = "Reply" if reply else "Quote Tweet"
+    table = Table(title=f"{len(result.drafts)} debate {action_label.lower()} draft(s) for: {category or 'Global Trends'}")
+    table.add_column("#", justify="right")
+    table.add_column("Author")
+    table.add_column(f"{action_label} Commentary")
+    table.add_column("Post Status")
+
+    for index, item in enumerate(result.drafts, start=1):
+        table.add_row(
+            str(index),
+            display_text(item.article.publisher),
+            display_text(item.draft.text),
+            item.post_id or "dry-run",
+        )
+
+    console.print(table)
+    console.print(f"[bold]Saved:[/bold] {output_dir}")
+
+
 @app.command("x-check")
+
 def x_check() -> None:
     """Verify X OAuth credentials without posting."""
     load_dotenv()

@@ -8,7 +8,8 @@ import httpx
 from twitter_automation_agent.config import Settings
 from twitter_automation_agent.llm import LLMClient
 from twitter_automation_agent.models import Article, DraftStyle, TweetDraft
-from twitter_automation_agent.safety import validate_tweet_text
+from twitter_automation_agent.safety import validate_tweet_text, validate_debate_tweet
+
 
 
 STYLE_GUIDANCE = {
@@ -207,5 +208,119 @@ Article:
 
 Draft {'a cohesive thread of ' + str(thread_length) + ' tweets' if is_thread else 'one tweet'}.
 IMPORTANT: You MUST write the tweet in English, regardless of the language of the source article."""
+
+    def draft_debate(self, article: Article, style: DraftStyle, reply: bool = False, stance: str = "contradict") -> TweetDraft:
+        provider = self.settings.llm_provider.lower().strip()
+        if provider in {"none", "fallback", "template"}:
+            raise ValueError("LLM provider must be configured. Hardcoded fallback templates have been removed.")
+
+        action_desc = "directly replying to the tweet" if reply else "quote-tweeting the post"
+        
+        if stance == "support":
+            stance_instructions = (
+                "Your goal is to write a compelling commentary that supports, expands on, or adds a constructive, reinforcing perspective to the original post.\n"
+                "- Do not challenge or criticize the original post. Offer a supporting point, highlight a key benefit/reason why this is true, or present a sharp agreement 'hot take'."
+            )
+            action_goal = "Draft a sharp supportive/agreement response in English"
+        else:
+            stance_instructions = (
+                "Your goal is to write a compelling commentary that challenges, critiques, or adds a skeptical, thought-provoking perspective to the original post.\n"
+                "- Do not just agree or repeat the original post. Offer a factual counter-point, highlight a hidden catch, or present a sharp 'hot take'."
+            )
+            action_goal = "Draft a sharp counter-argument/hot take response in English"
+
+        debate_sys_prompt = f"""You are a sharp, analytical Twitter/X user who loves engaging in debates and offering interesting, conversational perspectives.
+
+You are quote-tweeting a viral post. {stance_instructions}
+
+Hard rules:
+- STRICTLY stay under 230 characters to leave room for the original tweet URL and formatting.
+- Do not make up fake news, numbers, or claims. Use logic, common tech/business context, or general factual knowledge.
+- Be direct, slightly provocative, but remain respectful. Do not use slurs, threats, personal attacks, or harassment.
+- DO NOT include any hashtags or URLs.
+- Start the tweet with an appropriate emoji (e.g., 🤔, 🧐, 💡, 🤷‍♂️, ✅, 👏, 🎯, 🔥 depending on whether you support or contradict).
+- Return only your commentary text.
+- CRITICAL CHECK: If the original tweet text appears to be a user profile biography, a personal introduction (e.g., starting with "I've spent...", "I'm a founder...", "Follow me on X"), or a list of follow links/prompts rather than a tweet/statement/news claim, do not draft a response. Instead, return exactly: "INVALID_TWEET_CONTENT".
+"""
+
+        prompt = f"""{debate_sys_prompt}
+
+Style: {style.value}
+Style guidance: {STYLE_GUIDANCE[style]}
+
+Original Tweet (by {article.publisher}):
+{article.summary}
+
+{action_goal} for {action_desc}.
+"""
+        temperature = 0.9 if style in {DraftStyle.spicy, DraftStyle.ragebait} else 0.35
+
+        text: str | None = None
+        for attempt in range(4):
+            raw_text = self.llm.generate(
+                prompt,
+                temperature=temperature,
+                max_tokens=150,
+                json_format=False
+            )
+            if not raw_text:
+                continue
+
+            if "INVALID_TWEET_CONTENT" in raw_text:
+                raise ValueError("Original tweet text appears to be a profile bio or invalid content.")
+
+            # Trim the response
+            commentary = re.sub(r"\s+", " ", raw_text).strip().strip('"')
+            commentary = re.sub(r"^tweet:\s*", "", commentary, flags=re.IGNORECASE).strip()
+            commentary = re.sub(r"https?://\S+", "", commentary).strip()
+            commentary = re.sub(r"@([A-Za-z0-9_]{1,15})", r"\1", commentary)
+            commentary = re.sub(r"#\w+", "", commentary)
+            commentary = re.sub(r"\s+", " ", commentary).strip(" .")
+
+            # Format Tweet depending on reply mode
+            if reply:
+                full_tweet = commentary
+            else:
+                full_tweet = f"{commentary} {article.url}"
+
+            valid, reason = validate_debate_tweet(full_tweet, article)
+            if valid:
+                text = full_tweet
+                break
+
+            prompt += f"\n\nYour previous draft failed validation because: {reason}. Try again and fix the issue. You MUST be highly concise."
+
+        if not text:
+            raise ValueError(f"Failed to generate a valid debate tweet using {provider} after 4 attempts.")
+
+        rationale = f"Drafted debate {'reply' if reply else 'quote tweet'} response using {provider}."
+        return TweetDraft(
+            text=text,
+            is_thread=False,
+            thread_texts=[text],
+            style=style,
+            article=article,
+            image_url=None,
+            image_paths=[],
+            image_suggestions=[],
+            rationale=rationale,
+        )
+
+
+DEBATE_SYSTEM_PROMPT = """You are a sharp, analytical Twitter/X user who loves engaging in debates and offering counter-arguments, "hot takes", or "devil's advocate" perspectives.
+
+You are quote-tweeting a viral post. Your goal is to write a compelling commentary that challenges, critiques, or adds a skeptical, thought-provoking perspective to the original post.
+
+Hard rules:
+- STRICTLY stay under 230 characters to leave room for the original tweet URL and formatting.
+- Do not just agree or repeat the original post. Offer a factual counter-point, highlight a hidden catch, or present a sharp "hot take".
+- Do not make up fake news, numbers, or claims. Use logic, common tech/business context, or general factual knowledge.
+- Be direct, slightly provocative, but remain respectful. Do not use slurs, threats, personal attacks, or harassment.
+- DO NOT include any hashtags or URLs.
+- Start the tweet with a thinking or warning emoji (e.g., 🤔, 🧐, ⚠️, 💡, 🤷‍♂️).
+- Return only your commentary text.
+- CRITICAL CHECK: If the original tweet text appears to be a user profile biography, a personal introduction (e.g., starting with "I've spent...", "I'm a founder...", "Follow me on X"), or a list of follow links/prompts rather than a tweet/statement/news claim, do not draft a response. Instead, return exactly: "INVALID_TWEET_CONTENT".
+"""
+
 
 

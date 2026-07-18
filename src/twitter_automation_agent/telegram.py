@@ -26,6 +26,10 @@ class TelegramSender:
             {"command": "post", "description": "Schedule & post tweets to X"},
             {"command": "draft", "description": "Generate draft ideas (no posting)"},
             {"command": "trending", "description": "Generate drafts for trending news"},
+            {"command": "debate", "description": "Scrape viral tweets & draft counter-arguments"},
+            {"command": "reply", "description": "Scrape viral tweets & reply with counter-arguments"},
+            {"command": "quote", "description": "Scrape viral tweets & quote with counter-arguments"},
+            {"command": "mix", "description": "Scrape viral tweets & post both direct reply and quote-tweet"},
             {"command": "status", "description": "Check if the bot is alive"},
             {"command": "cancel", "description": "Cancel the current questionnaire"},
             {"command": "quit", "description": "Shut down the bot completely"},
@@ -89,11 +93,21 @@ class TelegramSender:
         index: int | None = None,
         total: int | None = None,
         chat_id: str | None = None,
+        prefix: str | None = None,
     ) -> str:
         if not self.settings.can_send_to_telegram:
             raise RuntimeError("Telegram credentials are not fully configured.")
 
-        if item.draft.is_thread and item.draft.thread_texts:
+        # Prefix direct reply/quote drafts with the parent tweet URL so the user has context on Telegram
+        is_debate_action = ("x.com" in str(item.article.url) or "twitter.com" in str(item.article.url)) and str(item.article.url) not in item.draft.text
+
+        if prefix:
+            full_text = f"{prefix}\n\n{item.draft.text}"
+            message_id = self.send_text(full_text, chat_id=chat_id)
+        elif is_debate_action:
+            full_text = f"💬 Link: {item.article.url}\n\n{item.draft.text}"
+            message_id = self.send_text(full_text, chat_id=chat_id)
+        elif item.draft.is_thread and item.draft.thread_texts:
             full_text = "\n\n🧵 Next:\n\n".join(item.draft.thread_texts)
             message_id = self.send_text(full_text, chat_id=chat_id)
         else:
