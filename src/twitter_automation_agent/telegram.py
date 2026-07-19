@@ -25,7 +25,6 @@ class TelegramSender:
         commands = [
             {"command": "post", "description": "Schedule & post tweets to X"},
             {"command": "draft", "description": "Generate draft ideas (no posting)"},
-            {"command": "trending", "description": "Generate drafts for trending news"},
             {"command": "debate", "description": "Scrape viral tweets & draft counter-arguments"},
             {"command": "reply", "description": "Scrape viral tweets & reply with counter-arguments"},
             {"command": "quote", "description": "Scrape viral tweets & quote with counter-arguments"},

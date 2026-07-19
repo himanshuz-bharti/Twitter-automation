@@ -538,7 +538,10 @@ class NewsCollector:
 
     def collect_from_apis(self, topic: str | None, lookback_hours: int, limit: int, category: str = "Tech") -> list[Article]:
         cutoff = datetime.now(UTC) - timedelta(hours=lookback_hours)
-        query = f"{topic} news" if topic else f"{category} breaking news"
+        if topic and category and topic.lower() != category.lower():
+            query = f"{topic} {category} news"
+        else:
+            query = f"{topic} news" if topic else f"{category} breaking news"
         
         api_articles = self._collect_newsdata(query, limit)
         if not api_articles:
@@ -592,7 +595,10 @@ key=lambda item: item.score, reverse=True)
         return deduped[:limit]
 
     def _collect_ddgs(self, topic: str | None, lookback_hours: int, category: str) -> list[Article]:
-        subject = topic if topic else category
+        if topic and category and topic.lower() != category.lower():
+            subject = f"{topic} {category}"
+        else:
+            subject = topic if topic else category
         queries = self._llm_search_queries(subject)
         if not queries:
             queries = [f"{category} news today"]
@@ -673,12 +679,18 @@ Example Execution for category 'Entertainment':
             return []
 
     def _feed_urls(self, topic: str | None, lookback_hours: int, category: str) -> list[str]:
-        subject = topic if topic else category
+        if topic and category and topic.lower() != category.lower():
+            subject = f"{topic} {category}"
+            fallback_query = f"{topic} {category} news today"
+        else:
+            subject = topic if topic else category
+            fallback_query = f"{topic} news today" if topic else f"{category} updates today"
         queries = self._llm_search_queries(subject)
         
-        fallback_query = f"{topic} news today" if topic else f"{category} updates today"
         if not queries or len(queries) < 2:
-            if topic:
+            if topic and category and topic.lower() != category.lower():
+                queries = [f"{topic} {category} news today", f"latest {topic} {category} updates", f"breaking {topic} {category} news"]
+            elif topic:
                 queries = [f"{topic} news today", f"latest {topic} updates", f"breaking {topic} news"]
             else:
                 queries = [f"{category} updates today", f"breaking {category} news", f"latest {category} news today"]

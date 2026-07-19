@@ -17,7 +17,6 @@ from twitter_automation_agent.telegram import TelegramSender
 
 HELP_TEXT = """Commands:
 /topic <topic> [count] - send drafts for a topic
-/trending [count] - send trending tech drafts
 /debate - interactively scrape viral tweets & draft counter-arguments
 /reply - interactively scrape viral tweets & post direct replies to X
 /quote - interactively scrape viral tweets & post quote-tweets to X
@@ -35,8 +34,7 @@ Examples:
 /mix
 /topic Microsoft 3
 /post "AI models"
-/post "Nvidia" --posts 3 --interval 60
-/trending 3""".strip()
+/post "Nvidia" --posts 3 --interval 60""".strip()
 
 
 class ConversationState(Enum):
@@ -338,15 +336,6 @@ class TelegramCommandBot:
             return BotCommand(name="status")
         if raw_name in {"/quit", "quit"}:
             return BotCommand(name="quit")
-        if raw_name in {"/trending", "trending"}:
-            if count is None and args:
-                count = self._parse_count(args[0])
-            return BotCommand(
-                name="batch",
-                topic=None,
-                count=count or self.default_count,
-                include_seen=include_seen,
-            )
         if raw_name in {"/topic", "topic"}:
             if not args:
                 raise ValueError("Usage: /topic <topic> [count]")
@@ -525,7 +514,7 @@ class TelegramCommandBot:
             return
 
 
-        topic_label = command.topic or f"trending {command.category.lower()} news"
+        topic_label = self._get_topic_label(command.topic, command.category)
         style = command.style or self.settings.default_style
         self.telegram.send_text(
             f"Building {command.count} draft(s) for {topic_label}. This can take a few minutes.",
@@ -555,7 +544,7 @@ class TelegramCommandBot:
         )
 
     def _run_post(self, command: BotCommand, chat_id: str) -> None:
-        topic_label = command.topic or f"trending {command.category.lower()} news"
+        topic_label = self._get_topic_label(command.topic, command.category)
         style = command.style or self.settings.default_style
         format_label = "thread" if command.is_thread else "tweet"
         
@@ -586,7 +575,7 @@ class TelegramCommandBot:
         )
 
     def _run_autopost(self, command: BotCommand, chat_id: str) -> None:
-        topic_label = command.topic or f"trending {command.category.lower()} news"
+        topic_label = self._get_topic_label(command.topic, command.category)
         style = command.style or self.settings.default_style
         
         queue_size = command.count if command.count > command.posts else command.posts
@@ -975,7 +964,7 @@ class TelegramCommandBot:
             if self._pending_format == "thread":
                 self._pending_posts = 1
                 self._state = ConversationState.IDLE
-                topic_label = self._pending_topic or "Trending"
+                topic_label = self._get_topic_label(self._pending_topic, self._pending_category)
                 self.telegram.send_text(f"Scheduling 1 thread about '{topic_label}'...", chat_id=chat_id)
                 
                 command = BotCommand(
@@ -1011,7 +1000,7 @@ class TelegramCommandBot:
                 
             if self._pending_posts == 1:
                 self._state = ConversationState.IDLE
-                topic_label = self._pending_topic or "Trending"
+                topic_label = self._get_topic_label(self._pending_topic, self._pending_category)
                 self.telegram.send_text(f"Scheduling 1 post about '{topic_label}'...", chat_id=chat_id)
                 
                 command = BotCommand(
@@ -1042,7 +1031,7 @@ class TelegramCommandBot:
                 return
                 
             self._state = ConversationState.IDLE
-            topic_label = self._pending_topic or "Trending"
+            topic_label = self._get_topic_label(self._pending_topic, self._pending_category)
             self.telegram.send_text(f"Scheduling {self._pending_posts} posts about '{topic_label}'...", chat_id=chat_id)
             
             internal_command_name = "autopost" if self._pending_posts > 1 else "post"
@@ -1095,7 +1084,7 @@ class TelegramCommandBot:
                 
             if self._pending_format == "thread":
                 self._state = ConversationState.IDLE
-                topic_label = self._pending_topic or "Trending"
+                topic_label = self._get_topic_label(self._pending_topic, self._pending_category)
                 self.telegram.send_text(f"Generating 1 thread draft about '{topic_label}'...", chat_id=chat_id)
                 
                 command = BotCommand(
@@ -1129,7 +1118,7 @@ class TelegramCommandBot:
                 return
                 
             self._state = ConversationState.IDLE
-            topic_label = self._pending_topic or "Trending"
+            topic_label = self._get_topic_label(self._pending_topic, self._pending_category)
             self.telegram.send_text(f"Generating {count} drafts about '{topic_label}'...", chat_id=chat_id)
             
             command = BotCommand(
