@@ -93,6 +93,42 @@ def _trim_to_tweet(text: str, article: Article | None = None) -> str:
     return text
 
 
+def _clean_human_reply(text: str) -> str:
+    text = text.strip()
+    emoji_prefix = ""
+    emoji_match = re.match(r'^([\U00010000-\U0010ffff]|\u2600-\u27bf|[\u2000-\u3300]\ufe0f?)+', text)
+    if emoji_match:
+        emoji_prefix = emoji_match.group(0).strip()
+        text = text[emoji_match.end():].strip()
+    
+    # Strip generic starting filler words
+    pattern = r'^(?:absolutely|well\s+said|this|exactly|couldn[\'’]t\s+agree\s+more|so\s+true|indeed|spot\s+on|agree|i\s+agree|agreed|nuance|totally|completely)\b\s*[,.!]*\s*'
+    while True:
+        m = re.match(pattern, text, re.IGNORECASE)
+        if not m:
+            break
+        text = text[m.end():].strip()
+        
+    # Strip preachy starting phrases
+    preachy_pattern = r'^(?:it[\'’]s\s+all\s+about|let[\'’]s\s+focus\s+on|let[\'’]s\s+keep\s+the\s+focus\s+on|we\s+need\s+to|we\s+must|it[\'’]s\s+crucial\s+to|it[\'’]s\s+important\s+to)\b\s*[,.!]*\s*'
+    while True:
+        m = re.match(preachy_pattern, text, re.IGNORECASE)
+        if not m:
+            break
+        text = text[m.end():].strip()
+
+    # Strip trailing filler agreement words
+    trailing_pattern = r'\b(?:well\s+said|exactly|agreed|indeed|spot\s+on|so\s+true|agree|absolutely)\b\s*[,.!]*\s*$'
+    while True:
+        m = re.search(trailing_pattern, text, re.IGNORECASE)
+        if not m:
+            break
+        text = text[:m.start()].strip()
+
+    cleaned = f"{emoji_prefix} {text}" if emoji_prefix else text
+    return cleaned.strip()
+
+
 def _article_context(article: Article) -> str:
     return f"""Title: {article.title}
 Source: {article.source}
@@ -209,7 +245,7 @@ Article:
 Draft {'a cohesive thread of ' + str(thread_length) + ' tweets' if is_thread else 'one tweet'}.
 IMPORTANT: You MUST write the tweet in English, regardless of the language of the source article."""
 
-    def draft_debate(self, article: Article, style: DraftStyle, reply: bool = False, stance: str = "contradict") -> TweetDraft:
+    def draft_debate(self, article: Article, style: DraftStyle, reply: bool = False, stance: str = "contradict", is_targeted: bool = False) -> TweetDraft:
         provider = self.settings.llm_provider.lower().strip()
         if provider in {"none", "fallback", "template"}:
             raise ValueError("LLM provider must be configured. Hardcoded fallback templates have been removed.")
@@ -229,18 +265,32 @@ IMPORTANT: You MUST write the tweet in English, regardless of the language of th
             )
             action_goal = "Draft a sharp counter-argument/hot take response in English"
 
+        invalid_check_rule = ""
+        if not is_targeted:
+            invalid_check_rule = '- CRITICAL CHECK: If the original tweet text appears to be a user profile biography, a personal introduction (e.g., starting with "I\'ve spent...", "I\'m a founder...", "Follow me on X"), or a list of follow links/prompts rather than a tweet/statement/news claim, do not draft a response. Instead, return exactly: "INVALID_TWEET_CONTENT".'
+
         debate_sys_prompt = f"""You are a sharp, analytical Twitter/X user who loves engaging in debates and offering interesting, conversational perspectives.
 
 You are quote-tweeting a viral post. {stance_instructions}
 
 Hard rules:
-- STRICTLY stay under 230 characters to leave room for the original tweet URL and formatting.
+- Keep the commentary extremely brief and casual: write only one or two short sentences (maximum 120 characters total). 
+- Do not try to write a complete structured paragraph. Keep it punchy and direct.
 - Do not make up fake news, numbers, or claims. Use logic, common tech/business context, or general factual knowledge.
 - Be direct, slightly provocative, but remain respectful. Do not use slurs, threats, personal attacks, or harassment.
 - DO NOT include any hashtags or URLs.
 - Start the tweet with an appropriate emoji (e.g., 🤔, 🧐, 💡, 🤷‍♂️, ✅, 👏, 🎯, 🔥 depending on whether you support or contradict).
 - Return only your commentary text.
-- CRITICAL CHECK: If the original tweet text appears to be a user profile biography, a personal introduction (e.g., starting with "I've spent...", "I'm a founder...", "Follow me on X"), or a list of follow links/prompts rather than a tweet/statement/news claim, do not draft a response. Instead, return exactly: "INVALID_TWEET_CONTENT".
+{invalid_check_rule}
+
+Style & Tone Matching Rules:
+- Carefully analyze the style, tone, punctuation, vocabulary, and casing (capitalization) of the Original Tweet.
+- Mimic and mirror that style in your reply (e.g., if the original tweet uses all lowercase, casual slang, or short fragments, format your reply the same way).
+- CRITICAL (Anti-AI & Anti-Preachy Rules): Absolutely do NOT write preachy lectures, academic advice, corporate statements, or PR/marketing slogans.
+  - DO NOT write advice or grand statements about society, progress, or the future (e.g., do NOT say "progress comes from...", "let's focus on...", "it's about...", "we need to...", "we must...").
+  - DO NOT start with any generic agreement words or filler expressions (e.g., do NOT start with "absolutely!", "well said!", "this!", "exactly!", "agree", "so true", "spot on", "indeed"). Start directly with your statement.
+- Be a peer, not a public speaker: Write like a normal person sending a quick, casual message. Speak directly to the specific point made (e.g., instead of "we must stop letting loud hate...", say "generalization ruins everything, glad someone called this out").
+- Keep it short & conversational: Normal tweets are usually short and direct. Do not write a long, perfectly structured paragraph to fill up the character limit. A punchy 80-120 character reply is much more realistic.
 """
 
         prompt = f"""{debate_sys_prompt}
@@ -276,6 +326,7 @@ Original Tweet (by {article.publisher}):
             commentary = re.sub(r"@([A-Za-z0-9_]{1,15})", r"\1", commentary)
             commentary = re.sub(r"#\w+", "", commentary)
             commentary = re.sub(r"\s+", " ", commentary).strip(" .")
+            commentary = _clean_human_reply(commentary)
 
             # Format Tweet depending on reply mode
             if reply:
