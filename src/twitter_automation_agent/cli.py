@@ -258,6 +258,7 @@ def debate(
     post: bool = typer.Option(False, help="Post the quote tweet automatically to X."),
     reply: bool = typer.Option(False, help="Reply directly to the tweet instead of quote tweeting."),
     stance: str = typer.Option("contradict", help="Stance on the tweet. Can be 'contradict' or 'support'."),
+    target_url: str | None = typer.Option(None, help="Target a specific tweet status URL."),
 ) -> None:
     """Scrape viral tweets in a category (or global trends), formulate a counter-argument/hot take, and draft Quote Tweets or direct replies."""
     load_dotenv()
@@ -274,6 +275,7 @@ def debate(
         skip_history=not include_seen,
         reply=reply,
         stance=stance,
+        target_url=target_url,
     )
 
     action_label = "Reply" if reply else "Quote Tweet"

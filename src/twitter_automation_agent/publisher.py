@@ -1,9 +1,12 @@
 import time
 import urllib.parse
 import webbrowser
+import threading
 from pathlib import Path
 
 from twitter_automation_agent.config import Settings
+
+_PUBLISH_LOCK = threading.Lock()
 
 
 class XPublisher:
@@ -21,101 +24,102 @@ class XPublisher:
         Automates the Twitter web interface using the foolproof Intent URL method.
         This opens a new tab in the user's ACTUAL default browser where they are already logged in.
         """
-        # We URL-encode the tweet text so it can be passed in the URL
-        encoded_text = urllib.parse.quote(text)
-        
-        intent_url = f"https://x.com/intent/tweet?text={encoded_text}"
-        if reply_to_id:
-            intent_url += f"&in_reply_to={reply_to_id}"
-        if quote_url:
-            intent_url += f"&url={urllib.parse.quote(str(quote_url))}"
-        
-        print("\n\n[SUCCESS] Opening X.com in your default system browser!")
-        print("Your tweet has been automatically pasted into the box.")
-        
-        if image_paths:
-            abs_paths = [str(Path(p).absolute()) for p in image_paths]
-            print("\n[IMAGE ATTACHMENT REQUIRED]")
-            print("Twitter Intent URLs cannot attach images automatically.")
-            print(f"Please drag and drop these images into your Tweet:\n" + "\n".join(abs_paths))
+        with _PUBLISH_LOCK:
+            # We URL-encode the tweet text so it can be passed in the URL
+            encoded_text = urllib.parse.quote(text)
             
-        if thread_texts and len(thread_texts) > 1:
-            print("\n[THREAD DETECTED]")
-            print("Twitter Intent URLs cannot natively post a 5-tweet thread.")
-            print("We will automate pasting the FIRST tweet and attaching the images.")
-            print("Then we will ask you for the URL of the posted tweet on Telegram to continue the thread.")
-                
-        print("\nClick the 'Post' button on X.com to finish!")
-        
-        # Open the URL in the default browser
-        webbrowser.open(intent_url)
-        
-        try:
-            import pyautogui
-            import subprocess
+            intent_url = f"https://x.com/intent/tweet?text={encoded_text}"
+            if reply_to_id:
+                intent_url += f"&in_reply_to={reply_to_id}"
+            if quote_url:
+                intent_url += f"&url={urllib.parse.quote(str(quote_url))}"
             
-            if is_first:
-                sleep_time = 28 if reply_to_id else 22
-            else:
-                sleep_time = 15 if (reply_to_id or quote_url) else 10
-            print(f"\n[AUTOMATION] Please do not touch your mouse/keyboard for {sleep_time} seconds...")
-            # Wait for the Chrome tab to fully open and load the X.com compose box
-            time.sleep(sleep_time)
+            print("\n\n[SUCCESS] Opening X.com in your default system browser!")
+            print("Your tweet has been automatically pasted into the box.")
             
             if image_paths:
-                # Copy the actual image data (pixels) into the Windows clipboard
-                # This ensures it pastes correctly as an image attachment in X.com
-                ps_command = (
-                    "Add-Type -AssemblyName System.Windows.Forms; "
-                    "$sc = New-Object System.Collections.Specialized.StringCollection; "
-                )
-                for p in abs_paths:
-                    ps_command += f"$sc.Add('{p}'); "
-                ps_command += "[System.Windows.Forms.Clipboard]::SetFileDropList($sc)"
+                abs_paths = [str(Path(p).absolute()) for p in image_paths]
+                print("\n[IMAGE ATTACHMENT REQUIRED]")
+                print("Twitter Intent URLs cannot attach images automatically.")
+                print(f"Please drag and drop these images into your Tweet:\n" + "\n".join(abs_paths))
                 
-                subprocess.run(["powershell", "-Sta", "-command", ps_command], check=False)
-                
-                # Paste the image directly into the active X.com tweet box
-                pyautogui.hotkey('ctrl', 'v')
-                
-                # Wait 8 seconds for the image thumbnail to fully upload, attach, and render
-                # (If you hit post too early, X.com complains that the media is still attaching)
-                time.sleep(8)
-                
-            # Press Ctrl+Enter (the X.com hotkey to immediately publish the tweet)
-            pyautogui.hotkey('ctrl', 'enter')
-            
-            print("Tweet automatically posted!")
-            
             if thread_texts and len(thread_texts) > 1:
-                print("\n[THREAD AUTOMATION] Fetching the parent tweet URL automatically...")
-                tweet_id = self._get_tweet_url_automatically()
-                
-                if not tweet_id:
-                    print("[THREAD AUTOMATION] Aborted due to failure to get tweet ID.")
-                else:
-                    for i, next_tweet in enumerate(thread_texts[1:]):
-                        if i > 0:
-                            print(f"[THREAD AUTOMATION] Waiting 3 minutes before posting the next reply...")
-                            time.sleep(180) # 3 minute interval
-                            
-                        encoded_next = urllib.parse.quote(next_tweet)
-                        reply_url = f"https://x.com/intent/tweet?in_reply_to={tweet_id}&text={encoded_next}"
-                        
-                        print(f"[THREAD AUTOMATION] Opening reply intent for next tweet...")
-                        webbrowser.open(reply_url)
-                        time.sleep(10) # wait for compose box
-                        
-                        pyautogui.hotkey('ctrl', 'enter')
-                        print(f"[THREAD AUTOMATION] Reply posted!")
+                print("\n[THREAD DETECTED]")
+                print("Twitter Intent URLs cannot natively post a 5-tweet thread.")
+                print("We will automate pasting the FIRST tweet and attaching the images.")
+                print("Then we will ask you for the URL of the posted tweet on Telegram to continue the thread.")
                     
-        except ImportError:
-            print("\n(Note: To enable 100% hands-free posting, run: pip install pyautogui pyperclip)")
-        except Exception as e:
-            print(f"\n[ERROR] GUI Automation failed: {e}")
-            print("You may need to manually click 'Post' in the opened browser tab.")
-        
-        return f"intent-post-{int(time.time())}"
+            print("\nClick the 'Post' button on X.com to finish!")
+            
+            # Open the URL in the default browser
+            webbrowser.open(intent_url)
+            
+            try:
+                import pyautogui
+                import subprocess
+                
+                if is_first:
+                    sleep_time = 28 if reply_to_id else 22
+                else:
+                    sleep_time = 15 if (reply_to_id or quote_url) else 10
+                print(f"\n[AUTOMATION] Please do not touch your mouse/keyboard for {sleep_time} seconds...")
+                # Wait for the Chrome tab to fully open and load the X.com compose box
+                time.sleep(sleep_time)
+                
+                if image_paths:
+                    # Copy the actual image data (pixels) into the Windows clipboard
+                    # This ensures it pastes correctly as an image attachment in X.com
+                    ps_command = (
+                        "Add-Type -AssemblyName System.Windows.Forms; "
+                        "$sc = New-Object System.Collections.Specialized.StringCollection; "
+                    )
+                    for p in abs_paths:
+                        ps_command += f"$sc.Add('{p}'); "
+                    ps_command += "[System.Windows.Forms.Clipboard]::SetFileDropList($sc)"
+                    
+                    subprocess.run(["powershell", "-Sta", "-command", ps_command], check=False)
+                    
+                    # Paste the image directly into the active X.com tweet box
+                    pyautogui.hotkey('ctrl', 'v')
+                    
+                    # Wait 8 seconds for the image thumbnail to fully upload, attach, and render
+                    # (If you hit post too early, X.com complains that the media is still attaching)
+                    time.sleep(8)
+                    
+                # Press Ctrl+Enter (the X.com hotkey to immediately publish the tweet)
+                pyautogui.hotkey('ctrl', 'enter')
+                
+                print("Tweet automatically posted!")
+                
+                if thread_texts and len(thread_texts) > 1:
+                    print("\n[THREAD AUTOMATION] Fetching the parent tweet URL automatically...")
+                    tweet_id = self._get_tweet_url_automatically()
+                    
+                    if not tweet_id:
+                        print("[THREAD AUTOMATION] Aborted due to failure to get tweet ID.")
+                    else:
+                        for i, next_tweet in enumerate(thread_texts[1:]):
+                            if i > 0:
+                                print(f"[THREAD AUTOMATION] Waiting 3 minutes before posting the next reply...")
+                                time.sleep(180) # 3 minute interval
+                                
+                            encoded_next = urllib.parse.quote(next_tweet)
+                            reply_url = f"https://x.com/intent/tweet?in_reply_to={tweet_id}&text={encoded_next}"
+                            
+                            print(f"[THREAD AUTOMATION] Opening reply intent for next tweet...")
+                            webbrowser.open(reply_url)
+                            time.sleep(10) # wait for compose box
+                            
+                            pyautogui.hotkey('ctrl', 'enter')
+                            print(f"[THREAD AUTOMATION] Reply posted!")
+                        
+            except ImportError:
+                print("\n(Note: To enable 100% hands-free posting, run: pip install pyautogui pyperclip)")
+            except Exception as e:
+                print(f"\n[ERROR] GUI Automation failed: {e}")
+                print("You may need to manually click 'Post' in the opened browser tab.")
+            
+            return f"intent-post-{int(time.time())}"
 
     def _get_tweet_url_automatically(self) -> str | None:
         try:

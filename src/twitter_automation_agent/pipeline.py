@@ -402,16 +402,24 @@ class Pipeline:
         reply: bool = False,
         mix: bool = False,
         stance: str = "contradict",
+        target_url: str | None = None,
     ) -> BatchPipelineResult:
         output_dir.mkdir(parents=True, exist_ok=True)
         history = self._load_history(output_dir) if skip_history else self._empty_history()
 
-        print(f"[DEBUG] Scraping viral tweets for category: {category or 'Global Trends'}...")
         scraper = XScraper(self.settings)
-        scraped_tweets = scraper.scrape_top_tweets(category=category, limit=max(count * 3, 12))
-
-        # Do not filter by history for debate mode to always allow seen tweets
-        fresh_tweets = scraped_tweets
+        if target_url:
+            print(f"[DEBUG] Scraping single target tweet: {target_url}...")
+            single_article = scraper.scrape_single_tweet(target_url)
+            if not single_article:
+                raise RuntimeError(f"Could not scrape target tweet URL: {target_url}")
+            scraped_tweets = [single_article]
+            fresh_tweets = scraped_tweets
+            count = 1
+        else:
+            print(f"[DEBUG] Scraping viral tweets for category: {category or 'Global Trends'}...")
+            scraped_tweets = scraper.scrape_top_tweets(category=category, limit=max(count * 3, 12))
+            fresh_tweets = scraped_tweets
 
         drafts: list[DraftItem] = []
         has_posted = False
@@ -423,7 +431,7 @@ class Pipeline:
             action_label = "direct-reply" if reply else "quote-tweet"
             print(f"[DEBUG] Drafting {action_label} response for: {article.publisher}")
             try:
-                draft = self.drafter.draft_debate(article, style, reply=True, stance=stance)
+                draft = self.drafter.draft_debate(article, style, reply=True, stance=stance, is_targeted=(target_url is not None))
             except Exception as e:
                 safe_err = str(e).encode('ascii', errors='replace').decode('ascii')
                 print(f"[DEBUG] Skipping tweet due to LLM failure: {safe_err}")

@@ -55,6 +55,8 @@ class ConversationState(Enum):
     AWAITING_DEBATE_TOPIC = auto()
     AWAITING_DEBATE_COUNT = auto()
     AWAITING_DEBATE_STANCE = auto()
+    AWAITING_DEBATE_MODE = auto()
+    AWAITING_DEBATE_LINK = auto()
     DIALOG = auto()
 
 
@@ -71,6 +73,7 @@ class BotCommand:
     is_thread: bool = False
     thread_length: int = 4
     stance: str = "contradict"
+    target_url: str | None = None
 
 
 class TelegramCommandBot:
@@ -103,6 +106,7 @@ class TelegramCommandBot:
         self._pending_command: str | None = None
         self._pending_debate_topic: str | None = None
         self._pending_debate_count: int | None = None
+        self._pending_debate_target_url: str | None = None
         self._dialog_slots = {"action": None, "topic": None, "count": None}
 
     def listen(self) -> None:
@@ -230,18 +234,17 @@ class TelegramCommandBot:
 
             if command.name in {"debate", "reply", "quote", "mix"}:
                 self._pending_command = command.name
-                self._state = ConversationState.AWAITING_DEBATE_TOPIC
+                self._state = ConversationState.AWAITING_DEBATE_MODE
                 keyboard = {
                     "keyboard": [
-                        [{"text": "Skip / Global Trends"}],
-                        [{"text": "AI"}, {"text": "Crypto"}],
-                        [{"text": "Tech"}, {"text": "Finance"}]
+                        [{"text": "Topic"}],
+                        [{"text": "Tweet Link"}]
                     ],
                     "resize_keyboard": True,
                     "one_time_keyboard": True
                 }
                 self.telegram.send_text(
-                    "💬 Enter a topic/category to search (e.g. AI, Crypto, Tech), or tap 'Skip / Global Trends' to search general trends:",
+                    "🔍 Would you like to debate/reply/mix by Topic or target a specific Tweet Link?",
                     chat_id=chat_id,
                     reply_markup=keyboard
                 )
@@ -618,9 +621,9 @@ class TelegramCommandBot:
 
     def _run_debate(self, command: BotCommand, chat_id: str) -> None:
         style = command.style or self.settings.default_style
-        category_label = command.category or "Global Trends"
+        category_label = f"Tweet Link" if command.target_url else (command.category or "Global Trends")
         self.telegram.send_text(
-            f"Scraping viral tweets in '{category_label}' and drafting counter-arguments...",
+            f"Scraping targeted tweet/trends in '{category_label}' and drafting counter-arguments...",
             chat_id=chat_id,
         )
         try:
@@ -632,6 +635,7 @@ class TelegramCommandBot:
                 post=False,
                 skip_history=not command.include_seen,
                 stance=command.stance,
+                target_url=command.target_url,
             )
             stance_label = "Support" if command.stance == "support" else "Contradict"
             for item in result.drafts:
@@ -648,9 +652,9 @@ class TelegramCommandBot:
 
     def _run_reply(self, command: BotCommand, chat_id: str) -> None:
         style = command.style or self.settings.default_style
-        category_label = command.category or "Global Trends"
+        category_label = f"Tweet Link" if command.target_url else (command.category or "Global Trends")
         self.telegram.send_text(
-            f"Scraping viral tweets in '{category_label}' and preparing to post direct replies...",
+            f"Scraping targeted tweet/trends in '{category_label}' and preparing to post direct replies...",
             chat_id=chat_id,
         )
         try:
@@ -663,6 +667,7 @@ class TelegramCommandBot:
                 skip_history=not command.include_seen,
                 reply=True,
                 stance=command.stance,
+                target_url=command.target_url,
             )
             stance_label = "Support" if command.stance == "support" else "Contradict"
             for item in result.drafts:
@@ -678,9 +683,9 @@ class TelegramCommandBot:
 
     def _run_quote(self, command: BotCommand, chat_id: str) -> None:
         style = command.style or self.settings.default_style
-        category_label = command.category or "Global Trends"
+        category_label = f"Tweet Link" if command.target_url else (command.category or "Global Trends")
         self.telegram.send_text(
-            f"Scraping viral tweets in '{category_label}' and preparing to post quote-tweets...",
+            f"Scraping targeted tweet/trends in '{category_label}' and preparing to post quote-tweets...",
             chat_id=chat_id,
         )
         try:
@@ -693,6 +698,7 @@ class TelegramCommandBot:
                 skip_history=not command.include_seen,
                 reply=False,
                 stance=command.stance,
+                target_url=command.target_url,
             )
             stance_label = "Support" if command.stance == "support" else "Contradict"
             for item in result.drafts:
@@ -708,9 +714,9 @@ class TelegramCommandBot:
 
     def _run_mix(self, command: BotCommand, chat_id: str) -> None:
         style = command.style or self.settings.default_style
-        category_label = command.category or "Global Trends"
+        category_label = f"Tweet Link" if command.target_url else (command.category or "Global Trends")
         self.telegram.send_text(
-            f"Scraping viral tweets in '{category_label}' and preparing to post direct replies AND quote-tweets...",
+            f"Scraping targeted tweet/trends in '{category_label}' and preparing to post direct replies AND quote-tweets...",
             chat_id=chat_id,
         )
         try:
@@ -724,6 +730,7 @@ class TelegramCommandBot:
                 reply=False,
                 mix=True,
                 stance=command.stance,
+                target_url=command.target_url,
             )
             stance_label = "Support" if command.stance == "support" else "Contradict"
             for item in result.drafts:
@@ -759,6 +766,65 @@ class TelegramCommandBot:
                 "resize_keyboard": True,
                 "one_time_keyboard": True
             }
+
+        if self._state == ConversationState.AWAITING_DEBATE_MODE:
+            val = text.strip().lower()
+            if val in {"topic", "by topic"}:
+                self._state = ConversationState.AWAITING_DEBATE_TOPIC
+                keyboard = {
+                    "keyboard": [
+                        [{"text": "Skip / Global Trends"}],
+                        [{"text": "AI"}, {"text": "Crypto"}],
+                        [{"text": "Tech"}, {"text": "Finance"}]
+                    ],
+                    "resize_keyboard": True,
+                    "one_time_keyboard": True
+                }
+                self.telegram.send_text(
+                    "💬 Enter a topic/category to search (e.g. AI, Crypto, Tech), or tap 'Skip / Global Trends' to search general trends:",
+                    chat_id=chat_id,
+                    reply_markup=keyboard
+                )
+            elif val in {"tweet link", "link", "post link"}:
+                self._state = ConversationState.AWAITING_DEBATE_LINK
+                self.telegram.send_text(
+                    "🔗 Please send/paste the link of the X/Twitter post you want to target (e.g. https://x.com/username/status/123456):",
+                    chat_id=chat_id,
+                    reply_markup={"remove_keyboard": True}
+                )
+            else:
+                self.telegram.send_text("Please choose either 'Topic' or 'Tweet Link'.", chat_id=chat_id)
+            return
+
+        if self._state == ConversationState.AWAITING_DEBATE_LINK:
+            val = text.strip()
+            # Simple regex verification for X status URL
+            match = re.search(r'(?:x\.com|twitter\.com)/([^/]+)/status/(\d+)', val)
+            if not match:
+                self.telegram.send_text(
+                    "⚠️ Invalid link format. Please make sure the URL contains 'x.com/username/status/123456'. Try again:",
+                    chat_id=chat_id
+                )
+                return
+            
+            self._pending_debate_target_url = val
+            self._pending_debate_count = 1
+            self._state = ConversationState.AWAITING_DEBATE_STANCE
+            
+            keyboard = {
+                "keyboard": [
+                    [{"text": "Support"}],
+                    [{"text": "Contradict"}]
+                ],
+                "resize_keyboard": True,
+                "one_time_keyboard": True
+            }
+            self.telegram.send_text(
+                "⚖️ Would you like to Support or Contradict this tweet?",
+                chat_id=chat_id,
+                reply_markup=keyboard
+            )
+            return
 
         if self._state == ConversationState.AWAITING_DEBATE_TOPIC:
             val = text.strip()
@@ -813,15 +879,17 @@ class TelegramCommandBot:
             command = BotCommand(
                 name=command_name,
                 category=self._pending_debate_topic,
-                count=self._pending_debate_count,
+                count=self._pending_debate_count or 1,
                 include_seen=False,
                 stance=val,
+                target_url=self._pending_debate_target_url,
             )
             
             # Reset pending state
             self._pending_command = None
             self._pending_debate_topic = None
             self._pending_debate_count = None
+            self._pending_debate_target_url = None
             
             self._dispatch_command(command, chat_id)
             return
