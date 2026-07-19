@@ -276,6 +276,7 @@ class Pipeline:
                     len(sent_items),
                     count,
                     chat_id=chat_id,
+                    interactive=True,
                 )
                 item.posted = True
                 self._append_history(output_dir, [item], "sent")

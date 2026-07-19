@@ -138,6 +138,11 @@ class TelegramCommandBot:
                     self.console.print(f"[red]Error handling update:[/red] {exc}")
 
     def _handle_update(self, update: dict) -> None:
+        callback_query = update.get("callback_query")
+        if callback_query:
+            self._handle_callback_query(callback_query)
+            return
+
         message = update.get("message")
         if not isinstance(message, dict):
             return
@@ -177,6 +182,99 @@ class TelegramCommandBot:
 
         if not text:
             return
+
+        # CHECK IF THIS MESSAGE CONTAINS A DRAFT ID FOR EDITING!
+        match = re.search(r'\(Draft ID:\s*(dr_[a-z0-9]+)\)', text)
+        if match:
+            draft_id = match.group(1)
+            from twitter_automation_agent.telegram import (
+                get_cached_draft,
+                remove_cached_draft,
+                update_draft_text,
+            )
+            entry = get_cached_draft(draft_id)
+            if entry:
+                clean_text = text.replace(match.group(0), "").strip()
+                update_draft_text(entry.item, clean_text)
+                
+                # Delete old draft message and old images
+                if entry.message_id:
+                    self.telegram.delete_message(entry.message_id, chat_id=chat_id)
+                for img_id in entry.image_message_ids:
+                    self.telegram.delete_message(img_id, chat_id=chat_id)
+                
+                # Try to delete the user's edit message as well
+                try:
+                    self.telegram.delete_message(str(message.get("message_id")), chat_id=chat_id)
+                except Exception:
+                    pass
+                
+                # Remove the old cached entry
+                remove_cached_draft(draft_id)
+                
+                # Resend the updated draft as a new interactive message
+                try:
+                    self.telegram.send_draft(
+                        item=entry.item,
+                        chat_id=chat_id,
+                        prefix=entry.prefix,
+                        interactive=True,
+                        is_debate=entry.is_debate,
+                        reply=entry.reply
+                    )
+                    self.telegram.send_text(
+                        "✏️ Draft updated successfully!",
+                        chat_id=chat_id
+                    )
+                except Exception as e:
+                    self.telegram.send_text(f"⚠️ Failed to send updated draft: {e}", chat_id=chat_id)
+                return
+
+        # CHECK IF THIS MESSAGE IS A REPLY TO A DRAFT MESSAGE FOR EDITING!
+        reply_to = message.get("reply_to_message")
+        if reply_to:
+            replied_msg_id = str(reply_to.get("message_id"))
+            from twitter_automation_agent.telegram import (
+                get_draft_by_message_id,
+                remove_cached_draft,
+                update_draft_text,
+            )
+            found = get_draft_by_message_id(replied_msg_id)
+            if found:
+                old_draft_id, entry = found
+                update_draft_text(entry.item, text)
+                
+                # Delete old draft message and old images
+                self.telegram.delete_message(replied_msg_id, chat_id=chat_id)
+                for img_id in entry.image_message_ids:
+                    self.telegram.delete_message(img_id, chat_id=chat_id)
+                
+                # Try to delete the user's reply message as well
+                try:
+                    self.telegram.delete_message(str(message.get("message_id")), chat_id=chat_id)
+                except Exception:
+                    pass
+                
+                # Remove the old cached entry
+                remove_cached_draft(old_draft_id)
+                
+                # Resend the updated draft as a new interactive message
+                try:
+                    self.telegram.send_draft(
+                        item=entry.item,
+                        chat_id=chat_id,
+                        prefix=entry.prefix,
+                        interactive=True,
+                        is_debate=entry.is_debate,
+                        reply=entry.reply
+                    )
+                    self.telegram.send_text(
+                        "✏️ Draft updated successfully!",
+                        chat_id=chat_id
+                    )
+                except Exception as e:
+                    self.telegram.send_text(f"⚠️ Failed to send updated draft: {e}", chat_id=chat_id)
+                return
 
         if text.lower() in {"/cancel", "cancel"}:
             self._state = ConversationState.IDLE
@@ -628,7 +726,14 @@ class TelegramCommandBot:
             )
             stance_label = "Support" if command.stance == "support" else "Contradict"
             for item in result.drafts:
-                self.telegram.send_draft(item, chat_id=chat_id, prefix=f"💬 Draft Quote Tweet ({stance_label}) for: {item.article.url}")
+                self.telegram.send_draft(
+                    item,
+                    chat_id=chat_id,
+                    prefix=f"💬 Draft Quote Tweet ({stance_label}) for: {item.article.url}",
+                    interactive=True,
+                    is_debate=True,
+                    reply=False,
+                )
         except Exception as exc:
             self.telegram.send_text(f"Debate failed: {exc}", chat_id=chat_id)
             return
@@ -1060,7 +1165,7 @@ class TelegramCommandBot:
             self._pending_category = category
             self._state = ConversationState.AWAITING_DRAFT_TOPIC
             
-            self.telegram.send_text("≡ƒöì Scanning live news for trending topics...", chat_id=chat_id, reply_markup={"remove_keyboard": True})
+            self.telegram.send_text("🔍 Scanning live news for trending topics...", chat_id=chat_id, reply_markup={"remove_keyboard": True})
             topics_keyboard = get_topic_keyboard(category)
             
             self.telegram.send_text(
@@ -1147,6 +1252,112 @@ class TelegramCommandBot:
         }
         
         self.telegram.send_text("Which category of news? Tap a button below:", chat_id=chat_id, reply_markup=category_keyboard)
+
+    def _handle_callback_query(self, callback_query: dict) -> None:
+        query_id = callback_query.get("id")
+        data = callback_query.get("data", "")
+        message = callback_query.get("message", {})
+        chat = message.get("chat", {})
+        chat_id = str(chat.get("id"))
+        
+        if chat_id != str(self.settings.telegram_chat_id):
+            return
+
+        if not data:
+            return
+
+        parts = data.split("_", 1)
+        if len(parts) < 2:
+            return
+        
+        action, draft_id = parts[0], parts[1]
+        
+        from twitter_automation_agent.telegram import get_cached_draft, remove_cached_draft, format_draft_message_text
+        
+        entry = get_cached_draft(draft_id)
+        if not entry:
+            self.telegram.answer_callback_query(query_id, text="⚠️ Draft not found or expired.", show_alert=True)
+            try:
+                msg_id = str(message.get("message_id"))
+                self.telegram.edit_message_text(
+                    text=message.get("text", "") + "\n\n⚠️ (Draft expired/not found)",
+                    message_id=msg_id,
+                    chat_id=chat_id,
+                    reply_markup=None
+                )
+            except Exception:
+                pass
+            return
+
+        if action == "post":
+            self.telegram.answer_callback_query(query_id, text="🚀 Initiating post to X...")
+            self.telegram.send_text("🚀 Posting draft to X from your PC... Please wait.", chat_id=chat_id)
+            
+            try:
+                from twitter_automation_agent.publisher import XPublisher
+                publisher = XPublisher(self.settings)
+                
+                reply_to_id = None
+                quote_url = None
+                
+                if entry.is_debate:
+                    if entry.reply:
+                        match = re.search(r'/status/(\d+)', str(entry.item.article.url))
+                        reply_to_id = match.group(1) if match else None
+                    else:
+                        quote_url = entry.item.article.url
+                
+                post_id = publisher.post(
+                    text=entry.item.draft.text,
+                    image_paths=entry.item.draft.image_paths,
+                    thread_texts=entry.item.draft.thread_texts if entry.item.draft.is_thread else None,
+                    telegram_sender=self.telegram,
+                    reply_to_id=reply_to_id,
+                    quote_url=quote_url,
+                    is_first=True,
+                )
+                
+                original_text = format_draft_message_text(entry.item, entry.prefix)
+                self.telegram.edit_message_text(
+                    text=original_text + "\n\n✅ Posted to X!",
+                    message_id=str(message.get("message_id")),
+                    chat_id=chat_id,
+                    reply_markup=None
+                )
+                
+                remove_cached_draft(draft_id)
+                self.telegram.send_text("✅ Successfully posted to X!", chat_id=chat_id)
+                
+            except Exception as e:
+                self.telegram.send_text(f"❌ Failed to post draft: {e}", chat_id=chat_id)
+                
+        elif action == "edit":
+            self.telegram.answer_callback_query(query_id, text="✍️ Reply to the draft message to edit.")
+            self.telegram.send_text(
+                text="✍️ Please reply directly to the draft message above (the one with the buttons) with your new text.",
+                chat_id=chat_id,
+                reply_to_message_id=str(message.get("message_id"))
+            )
+            
+        elif action == "discard":
+            self.telegram.answer_callback_query(query_id, text="❌ Draft discarded.")
+            try:
+                original_text = format_draft_message_text(entry.item, entry.prefix)
+                self.telegram.edit_message_text(
+                    text=original_text + "\n\n❌ Discarded.",
+                    message_id=str(message.get("message_id")),
+                    chat_id=chat_id,
+                    reply_markup=None
+                )
+            except Exception as e:
+                print(f"[DEBUG] Failed to edit message on discard: {e}")
+            remove_cached_draft(draft_id)
+
+    def _get_topic_label(self, topic: str | None, category: str | None) -> str:
+        if topic:
+            return topic
+        cat_lower = category.lower() if category else "tech"
+        return f"trending {cat_lower} news"
 
 
 
