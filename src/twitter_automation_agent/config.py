@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     news_lookback_hours: int = Field(default=24, ge=1, le=168)
     max_articles: int = Field(default=80, ge=1, le=200)
     default_style: DraftStyle = DraftStyle.ragebait
+    default_language: str = "English"
 
     @property
     def can_post_to_x(self) -> bool:

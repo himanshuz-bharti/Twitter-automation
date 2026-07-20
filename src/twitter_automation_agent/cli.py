@@ -63,6 +63,7 @@ def run(
     output_dir: Path = typer.Option(Path("outputs"), help="Directory for draft bundles."),
     include_seen: bool = typer.Option(False, help="Allow articles generated in previous runs."),
     post: bool = typer.Option(False, help="Post to X/Twitter. Requires paid X API credits."),
+    language: str = typer.Option("English", "--language", "-l", help="Language for the drafted post/thread."),
 ) -> None:
     """Run the full news-to-tweet pipeline and save drafts locally."""
     load_dotenv()
@@ -80,6 +81,7 @@ def run(
         count=count,
         post=post,
         skip_history=not include_seen,
+        language=language,
     )
 
     table = Table(title=f"{len(result.drafts)} draft(s) for: {result.topic}")
@@ -136,6 +138,7 @@ def autopost(
     output_dir: Path = typer.Option(Path("outputs"), help="Directory for queue/history files."),
     include_seen: bool = typer.Option(False, help="Allow articles already posted through this command."),
     dry_run: bool = typer.Option(False, help="Build queue and simulate posting without using X."),
+    language: str = typer.Option("English", "--language", "-l", help="Language for the drafted post/thread."),
 ) -> None:
     """Post ranked news tweets to X. Requires paid X API credits."""
     load_dotenv()
@@ -153,6 +156,7 @@ def autopost(
         interval_minutes=interval_minutes,
         skip_history=not include_seen,
         dry_run=dry_run,
+        language=language,
     )
 
     table = Table(title=f"Autopost {'dry run' if dry_run else 'run'}: {len(result.drafts)} item(s)")
@@ -175,6 +179,7 @@ def telegram_batch(
     output_dir: Path = typer.Option(Path("outputs"), help="Directory for batch/history files."),
     include_seen: bool = typer.Option(False, help="Allow articles already sent through this command."),
     dry_run: bool = typer.Option(False, help="Build the batch without sending to Telegram."),
+    language: str = typer.Option("English", "--language", "-l", help="Language for the drafted post/thread."),
 ) -> None:
     """Send a batch of ranked tweet drafts plus images to Telegram immediately."""
     load_dotenv()
@@ -191,6 +196,7 @@ def telegram_batch(
         count=count,
         skip_history=not include_seen,
         dry_run=dry_run,
+        language=language,
     )
 
     table = Table(title=f"Telegram {'dry run' if dry_run else 'delivery'}: {len(result.drafts)} item(s)")
@@ -259,6 +265,7 @@ def debate(
     reply: bool = typer.Option(False, help="Reply directly to the tweet instead of quote tweeting."),
     stance: str = typer.Option("contradict", help="Stance on the tweet. Can be 'contradict' or 'support'."),
     target_url: str | None = typer.Option(None, help="Target a specific tweet status URL."),
+    language: str = typer.Option("English", "--language", "-l", help="Language for the drafted post/thread."),
 ) -> None:
     """Scrape viral tweets in a category (or global trends), formulate a counter-argument/hot take, and draft Quote Tweets or direct replies."""
     load_dotenv()
@@ -276,6 +283,7 @@ def debate(
         reply=reply,
         stance=stance,
         target_url=target_url,
+        language=language,
     )
 
     action_label = "Reply" if reply else "Quote Tweet"

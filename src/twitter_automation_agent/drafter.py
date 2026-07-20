@@ -143,14 +143,14 @@ class TweetDrafter:
         self.timeout = timeout
         self.llm = LLMClient(settings, timeout)
 
-    def draft(self, article: Article, style: DraftStyle, is_thread: bool = False, thread_length: int = 4) -> TweetDraft:
+    def draft(self, article: Article, style: DraftStyle, is_thread: bool = False, thread_length: int = 4, language: str = "English") -> TweetDraft:
         provider = self.settings.llm_provider.lower().strip()
         text: str | None = None
         
         if provider in {"none", "fallback", "template"}:
             raise ValueError("LLM provider must be configured. Hardcoded fallback templates have been removed.")
 
-        prompt = self._prompt(article, style, is_thread, thread_length)
+        prompt = self._prompt(article, style, is_thread, thread_length, language)
         temperature = 0.9 if style in {DraftStyle.spicy, DraftStyle.ragebait} else 0.35
         
         thread_texts = []
@@ -230,7 +230,7 @@ class TweetDrafter:
             rationale=rationale,
         )
 
-    def _prompt(self, article: Article, style: DraftStyle, is_thread: bool = False, thread_length: int = 4) -> str:
+    def _prompt(self, article: Article, style: DraftStyle, is_thread: bool = False, thread_length: int = 4, language: str = "English") -> str:
         sys_prompt = THREAD_SYSTEM_PROMPT if is_thread else SYSTEM_PROMPT
         if is_thread:
             sys_prompt = sys_prompt.replace("4 to 5", str(thread_length))
@@ -243,9 +243,9 @@ Article:
 {_article_context(article)}
 
 Draft {'a cohesive thread of ' + str(thread_length) + ' tweets' if is_thread else 'one tweet'}.
-IMPORTANT: You MUST write the tweet in English, regardless of the language of the source article."""
+IMPORTANT: You MUST write the tweet in {language}, regardless of the language of the source article."""
 
-    def draft_debate(self, article: Article, style: DraftStyle, reply: bool = False, stance: str = "contradict", is_targeted: bool = False) -> TweetDraft:
+    def draft_debate(self, article: Article, style: DraftStyle, reply: bool = False, stance: str = "contradict", is_targeted: bool = False, language: str = "English") -> TweetDraft:
         provider = self.settings.llm_provider.lower().strip()
         if provider in {"none", "fallback", "template"}:
             raise ValueError("LLM provider must be configured. Hardcoded fallback templates have been removed.")
@@ -257,13 +257,13 @@ IMPORTANT: You MUST write the tweet in English, regardless of the language of th
                 "Your goal is to write a compelling commentary that supports, expands on, or adds a constructive, reinforcing perspective to the original post.\n"
                 "- Do not challenge or criticize the original post. Offer a supporting point, highlight a key benefit/reason why this is true, or present a sharp agreement 'hot take'."
             )
-            action_goal = "Draft a sharp supportive/agreement response in English"
+            action_goal = f"Draft a sharp supportive/agreement response in {language}"
         else:
             stance_instructions = (
                 "Your goal is to write a compelling commentary that challenges, critiques, or adds a skeptical, thought-provoking perspective to the original post.\n"
                 "- Do not just agree or repeat the original post. Offer a factual counter-point, highlight a hidden catch, or present a sharp 'hot take'."
             )
-            action_goal = "Draft a sharp counter-argument/hot take response in English"
+            action_goal = f"Draft a sharp counter-argument/hot take response in {language}"
 
         invalid_check_rule = ""
         if not is_targeted:
