@@ -39,17 +39,23 @@ Examples:
 
 class ConversationState(Enum):
     IDLE = auto()
+    AWAITING_POST_LANGUAGE = auto()
+    AWAITING_POST_CUSTOM_LANGUAGE = auto()
     AWAITING_POST_FORMAT = auto()
     AWAITING_POST_THREAD_LENGTH = auto()
     AWAITING_POST_CATEGORY = auto()
     AWAITING_POST_TOPIC = auto()
     AWAITING_POST_COUNT = auto()
     AWAITING_INTERVAL = auto()
+    AWAITING_DRAFT_LANGUAGE = auto()
+    AWAITING_DRAFT_CUSTOM_LANGUAGE = auto()
     AWAITING_DRAFT_FORMAT = auto()
     AWAITING_DRAFT_THREAD_LENGTH = auto()
     AWAITING_DRAFT_CATEGORY = auto()
     AWAITING_DRAFT_TOPIC = auto()
     AWAITING_DRAFT_COUNT = auto()
+    AWAITING_DEBATE_LANGUAGE = auto()
+    AWAITING_DEBATE_CUSTOM_LANGUAGE = auto()
     AWAITING_DEBATE_TOPIC = auto()
     AWAITING_DEBATE_COUNT = auto()
     AWAITING_DEBATE_STANCE = auto()
@@ -72,6 +78,7 @@ class BotCommand:
     thread_length: int = 4
     stance: str = "contradict"
     target_url: str | None = None
+    language: str = "English"
 
 
 class TelegramCommandBot:
@@ -105,6 +112,7 @@ class TelegramCommandBot:
         self._pending_debate_topic: str | None = None
         self._pending_debate_count: int | None = None
         self._pending_debate_target_url: str | None = None
+        self._pending_language: str | None = None
         self._dialog_slots = {"action": None, "topic": None, "count": None}
 
     def listen(self) -> None:
@@ -284,6 +292,7 @@ class TelegramCommandBot:
             self._pending_thread_length = None
             self._pending_command = None
             self._pending_debate_topic = None
+            self._pending_language = None
             self._dialog_slots = {"action": None, "topic": None, "count": None}
             self.telegram.send_text("Conversation cancelled.", chat_id=chat_id)
             return
@@ -312,38 +321,16 @@ class TelegramCommandBot:
                 sys.exit(0)
                 
             if command.name in {"interactive_post", "interactive_draft"}:
-                keyboard = {
-                    "keyboard": [[{"text": "Post"}], [{"text": "Thread"}]],
-                    "resize_keyboard": True,
-                    "one_time_keyboard": True
-                }
-                
                 if command.name == "interactive_post":
-                    self._state = ConversationState.AWAITING_POST_FORMAT
-                    self.telegram.send_text("Do you want to create a single Post or a Thread?", chat_id=chat_id, reply_markup=keyboard)
+                    self._ask_language(chat_id, ConversationState.AWAITING_POST_LANGUAGE)
                     return
-                    
                 if command.name == "interactive_draft":
-                    self._state = ConversationState.AWAITING_DRAFT_FORMAT
-                    self.telegram.send_text("Do you want to create a single Post or a Thread?", chat_id=chat_id, reply_markup=keyboard)
+                    self._ask_language(chat_id, ConversationState.AWAITING_DRAFT_LANGUAGE)
                     return
 
             if command.name in {"debate", "reply", "quote", "mix"}:
                 self._pending_command = command.name
-                self._state = ConversationState.AWAITING_DEBATE_MODE
-                keyboard = {
-                    "keyboard": [
-                        [{"text": "Topic"}],
-                        [{"text": "Tweet Link"}]
-                    ],
-                    "resize_keyboard": True,
-                    "one_time_keyboard": True
-                }
-                self.telegram.send_text(
-                    "🔍 Would you like to debate/reply/mix by Topic or target a specific Tweet Link?",
-                    chat_id=chat_id,
-                    reply_markup=keyboard
-                )
+                self._ask_language(chat_id, ConversationState.AWAITING_DEBATE_LANGUAGE)
                 return
                     
             if self._busy:
@@ -426,7 +413,7 @@ class TelegramCommandBot:
             raise ValueError(HELP_TEXT)
 
         raw_name = parts[0].split("@", 1)[0].lower()
-        args, count, include_seen, posts, interval = self._parse_options(parts[1:])
+        args, count, include_seen, posts, interval, language = self._parse_options(parts[1:])
 
         if raw_name in {"/help", "help", "/start", "start"}:
             return BotCommand(name="help")
@@ -450,6 +437,7 @@ class TelegramCommandBot:
                 topic=topic,
                 count=count or self.default_count,
                 include_seen=include_seen,
+                language=language,
             )
         if raw_name in {"/post", "post"}:
             if not args:
@@ -467,6 +455,7 @@ class TelegramCommandBot:
                 include_seen=include_seen,
                 posts=posts,
                 interval_minutes=interval,
+                language=language,
             )
 
         if raw_name in {"/debate", "debate"}:
@@ -485,6 +474,7 @@ class TelegramCommandBot:
                 category=category,
                 count=parsed_count,
                 include_seen=include_seen,
+                language=language,
             )
 
 
@@ -504,6 +494,7 @@ class TelegramCommandBot:
                 category=category,
                 count=parsed_count,
                 include_seen=include_seen,
+                language=language,
             )
 
         if raw_name in {"/quote", "quote"}:
@@ -522,6 +513,7 @@ class TelegramCommandBot:
                 category=category,
                 count=parsed_count,
                 include_seen=include_seen,
+                language=language,
             )
 
         if raw_name in {"/mix", "mix", "/both", "both"}:
@@ -540,6 +532,7 @@ class TelegramCommandBot:
                 category=category,
                 count=parsed_count,
                 include_seen=include_seen,
+                language=language,
             )
 
         if raw_name in {"/draft", "draft"}:
@@ -547,12 +540,13 @@ class TelegramCommandBot:
 
         raise ValueError(HELP_TEXT)
 
-    def _parse_options(self, args: list[str]) -> tuple[list[str], int | None, bool, int, float]:
+    def _parse_options(self, args: list[str]) -> tuple[list[str], int | None, bool, int, float, str]:
         topic_parts: list[str] = []
         count: int | None = None
         include_seen = False
         posts = 1
         interval = 90.0
+        language = self.settings.default_language
         
         index = 0
         while index < len(args):
@@ -578,10 +572,15 @@ class TelegramCommandBot:
                     interval = float(args[index])
                 except ValueError:
                     raise ValueError("Interval must be a number.")
+            elif lowered in {"--language", "-l", "--lang"}:
+                index += 1
+                if index >= len(args):
+                    raise ValueError("Usage: --language <language>")
+                language = args[index].strip()
             else:
                 topic_parts.append(arg)
             index += 1
-        return topic_parts, count, include_seen, posts, interval
+        return topic_parts, count, include_seen, posts, interval, language
     def _parse_count(self, raw: str) -> int:
         try:
             count = int(raw)
@@ -631,6 +630,7 @@ class TelegramCommandBot:
                 category=command.category,
                 is_thread=command.is_thread,
                 thread_length=command.thread_length,
+                language=command.language,
             )
         except Exception as exc:
             self.telegram.send_text(f"Batch failed: {exc}", chat_id=chat_id)
@@ -662,6 +662,7 @@ class TelegramCommandBot:
                 category=command.category,
                 is_thread=command.is_thread,
                 thread_length=command.thread_length,
+                language=command.language,
             )
         except Exception as exc:
             self.telegram.send_text(f"Post failed: {exc}", chat_id=chat_id)
@@ -696,6 +697,7 @@ class TelegramCommandBot:
                 category=command.category,
                 is_thread=command.is_thread,
                 thread_length=command.thread_length,
+                language=command.language,
             )
         except Exception as exc:
             self.telegram.send_text(f"Autopost failed: {exc}", chat_id=chat_id)
@@ -723,6 +725,7 @@ class TelegramCommandBot:
                 skip_history=not command.include_seen,
                 stance=command.stance,
                 target_url=command.target_url,
+                language=command.language,
             )
             stance_label = "Support" if command.stance == "support" else "Contradict"
             for item in result.drafts:
@@ -762,6 +765,7 @@ class TelegramCommandBot:
                 reply=True,
                 stance=command.stance,
                 target_url=command.target_url,
+                language=command.language,
             )
             stance_label = "Support" if command.stance == "support" else "Contradict"
             for item in result.drafts:
@@ -793,6 +797,7 @@ class TelegramCommandBot:
                 reply=False,
                 stance=command.stance,
                 target_url=command.target_url,
+                language=command.language,
             )
             stance_label = "Support" if command.stance == "support" else "Contradict"
             for item in result.drafts:
@@ -825,6 +830,7 @@ class TelegramCommandBot:
                 mix=True,
                 stance=command.stance,
                 target_url=command.target_url,
+                language=command.language,
             )
             stance_label = "Support" if command.stance == "support" else "Contradict"
             for item in result.drafts:
@@ -860,6 +866,101 @@ class TelegramCommandBot:
                 "resize_keyboard": True,
                 "one_time_keyboard": True
             }
+
+        if self._state == ConversationState.AWAITING_POST_LANGUAGE:
+            val = text.strip()
+            if val.lower() == "other":
+                self._state = ConversationState.AWAITING_POST_CUSTOM_LANGUAGE
+                self.telegram.send_text("Please type the language name (e.g. Hindi, Spanish):", chat_id=chat_id, reply_markup={"remove_keyboard": True})
+                return
+            self._pending_language = val
+            self._state = ConversationState.AWAITING_POST_FORMAT
+            keyboard = {
+                "keyboard": [[{"text": "Post"}], [{"text": "Thread"}]],
+                "resize_keyboard": True,
+                "one_time_keyboard": True
+            }
+            self.telegram.send_text("Do you want to create a single Post or a Thread?", chat_id=chat_id, reply_markup=keyboard)
+            return
+
+        if self._state == ConversationState.AWAITING_POST_CUSTOM_LANGUAGE:
+            self._pending_language = text.strip()
+            self._state = ConversationState.AWAITING_POST_FORMAT
+            keyboard = {
+                "keyboard": [[{"text": "Post"}], [{"text": "Thread"}]],
+                "resize_keyboard": True,
+                "one_time_keyboard": True
+            }
+            self.telegram.send_text("Do you want to create a single Post or a Thread?", chat_id=chat_id, reply_markup=keyboard)
+            return
+
+        if self._state == ConversationState.AWAITING_DRAFT_LANGUAGE:
+            val = text.strip()
+            if val.lower() == "other":
+                self._state = ConversationState.AWAITING_DRAFT_CUSTOM_LANGUAGE
+                self.telegram.send_text("Please type the language name (e.g. Hindi, Spanish):", chat_id=chat_id, reply_markup={"remove_keyboard": True})
+                return
+            self._pending_language = val
+            self._state = ConversationState.AWAITING_DRAFT_FORMAT
+            keyboard = {
+                "keyboard": [[{"text": "Post"}], [{"text": "Thread"}]],
+                "resize_keyboard": True,
+                "one_time_keyboard": True
+            }
+            self.telegram.send_text("Do you want to create a single Post or a Thread?", chat_id=chat_id, reply_markup=keyboard)
+            return
+
+        if self._state == ConversationState.AWAITING_DRAFT_CUSTOM_LANGUAGE:
+            self._pending_language = text.strip()
+            self._state = ConversationState.AWAITING_DRAFT_FORMAT
+            keyboard = {
+                "keyboard": [[{"text": "Post"}], [{"text": "Thread"}]],
+                "resize_keyboard": True,
+                "one_time_keyboard": True
+            }
+            self.telegram.send_text("Do you want to create a single Post or a Thread?", chat_id=chat_id, reply_markup=keyboard)
+            return
+
+        if self._state == ConversationState.AWAITING_DEBATE_LANGUAGE:
+            val = text.strip()
+            if val.lower() == "other":
+                self._state = ConversationState.AWAITING_DEBATE_CUSTOM_LANGUAGE
+                self.telegram.send_text("Please type the language name (e.g. Hindi, Spanish):", chat_id=chat_id, reply_markup={"remove_keyboard": True})
+                return
+            self._pending_language = val
+            self._state = ConversationState.AWAITING_DEBATE_MODE
+            keyboard = {
+                "keyboard": [
+                    [{"text": "Topic"}],
+                    [{"text": "Tweet Link"}]
+                ],
+                "resize_keyboard": True,
+                "one_time_keyboard": True
+            }
+            self.telegram.send_text(
+                "🔍 Would you like to debate/reply/mix by Topic or target a specific Tweet Link?",
+                chat_id=chat_id,
+                reply_markup=keyboard
+            )
+            return
+
+        if self._state == ConversationState.AWAITING_DEBATE_CUSTOM_LANGUAGE:
+            self._pending_language = text.strip()
+            self._state = ConversationState.AWAITING_DEBATE_MODE
+            keyboard = {
+                "keyboard": [
+                    [{"text": "Topic"}],
+                    [{"text": "Tweet Link"}]
+                ],
+                "resize_keyboard": True,
+                "one_time_keyboard": True
+            }
+            self.telegram.send_text(
+                "🔍 Would you like to debate/reply/mix by Topic or target a specific Tweet Link?",
+                chat_id=chat_id,
+                reply_markup=keyboard
+            )
+            return
 
         if self._state == ConversationState.AWAITING_DEBATE_MODE:
             val = text.strip().lower()
@@ -977,6 +1078,7 @@ class TelegramCommandBot:
                 include_seen=False,
                 stance=val,
                 target_url=self._pending_debate_target_url,
+                language=self._pending_language or self.settings.default_language
             )
             
             # Reset pending state
@@ -984,6 +1086,7 @@ class TelegramCommandBot:
             self._pending_debate_topic = None
             self._pending_debate_count = None
             self._pending_debate_target_url = None
+            self._pending_language = None
             
             self._dispatch_command(command, chat_id)
             return
@@ -1081,8 +1184,10 @@ class TelegramCommandBot:
                     posts=1,
                     interval_minutes=0,
                     is_thread=True,
-                    thread_length=self._pending_thread_length or 4
+                    thread_length=self._pending_thread_length or 4,
+                    language=self._pending_language or self.settings.default_language
                 )
+                self._pending_language = None
                 self._dispatch_command(command, chat_id)
                 return
                 
@@ -1117,8 +1222,10 @@ class TelegramCommandBot:
                     posts=1,
                     interval_minutes=0,
                     is_thread=(self._pending_format == "thread"),
-                    thread_length=self._pending_thread_length or 4
+                    thread_length=self._pending_thread_length or 4,
+                    language=self._pending_language or self.settings.default_language
                 )
+                self._pending_language = None
                 self._dispatch_command(command, chat_id)
                 return
 
@@ -1149,8 +1256,10 @@ class TelegramCommandBot:
                 posts=self._pending_posts,
                 interval_minutes=float(interval),
                 is_thread=(self._pending_format == "thread"),
-                thread_length=self._pending_thread_length or 4
+                thread_length=self._pending_thread_length or 4,
+                language=self._pending_language or self.settings.default_language
             )
+            self._pending_language = None
             self._dispatch_command(command, chat_id)
             return
 
@@ -1200,8 +1309,10 @@ class TelegramCommandBot:
                     include_seen=False,
                     posts=1,
                     is_thread=True,
-                    thread_length=self._pending_thread_length or 4
+                    thread_length=self._pending_thread_length or 4,
+                    language=self._pending_language or self.settings.default_language
                 )
+                self._pending_language = None
                 self._dispatch_command(command, chat_id)
                 return
                 
@@ -1234,8 +1345,10 @@ class TelegramCommandBot:
                 include_seen=False,
                 posts=1,
                 is_thread=(self._pending_format == "thread"),
-                thread_length=self._pending_thread_length or 4
+                thread_length=self._pending_thread_length or 4,
+                language=self._pending_language or self.settings.default_language
             )
+            self._pending_language = None
             self._dispatch_command(command, chat_id)
             return
 
@@ -1252,6 +1365,20 @@ class TelegramCommandBot:
         }
         
         self.telegram.send_text("Which category of news? Tap a button below:", chat_id=chat_id, reply_markup=category_keyboard)
+
+    def _ask_language(self, chat_id: str, next_state: ConversationState) -> None:
+        self._state = next_state
+        keyboard = {
+            "keyboard": [
+                [{"text": "English"}, {"text": "Spanish"}],
+                [{"text": "French"}, {"text": "German"}],
+                [{"text": "Japanese"}, {"text": "Chinese"}],
+                [{"text": "Other"}]
+            ],
+            "resize_keyboard": True,
+            "one_time_keyboard": True
+        }
+        self.telegram.send_text("Language selection: What language would you like the post/thread to be written in?", chat_id=chat_id, reply_markup=keyboard)
 
     def _handle_callback_query(self, callback_query: dict) -> None:
         query_id = callback_query.get("id")

@@ -51,6 +51,7 @@ class Pipeline:
         category: str = "Tech",
         is_thread: bool = False,
         thread_length: int = 4,
+        language: str = "English",
     ) -> BatchPipelineResult:
         output_dir.mkdir(parents=True, exist_ok=True)
         history = self._load_history(output_dir) if skip_history else self._empty_history()
@@ -83,7 +84,7 @@ class Pipeline:
                     
                 print(f"[DEBUG] Drafting tweet for article: {article.title}")
                 try:
-                    draft = self.drafter.draft(article, style, is_thread=is_thread, thread_length=thread_length)
+                    draft = self.drafter.draft(article, style, is_thread=is_thread, thread_length=thread_length, language=language)
                 except ValueError as e:
                     print(f"[DEBUG] Skipping article due to LLM failure: {e}")
                     continue
@@ -174,6 +175,7 @@ class Pipeline:
         category: str = "Tech",
         is_thread: bool = False,
         thread_length: int = 4,
+        language: str = "English",
     ) -> BatchPipelineResult:
         result = self.run(
             topic=topic,
@@ -187,6 +189,7 @@ class Pipeline:
             category=category,
             is_thread=is_thread,
             thread_length=thread_length,
+            language=language,
         )
 
         delivered_count = 0
@@ -246,6 +249,7 @@ class Pipeline:
         category: str = "Tech",
         is_thread: bool = False,
         thread_length: int = 4,
+        language: str = "English",
     ) -> BatchPipelineResult:
         result = self.run(
             topic=topic,
@@ -259,6 +263,7 @@ class Pipeline:
             category=category,
             is_thread=is_thread,
             thread_length=thread_length,
+            language=language,
         )
 
         sent_items: list[DraftItem] = []
@@ -404,6 +409,7 @@ class Pipeline:
         mix: bool = False,
         stance: str = "contradict",
         target_url: str | None = None,
+        language: str = "English",
     ) -> BatchPipelineResult:
         output_dir.mkdir(parents=True, exist_ok=True)
         history = self._load_history(output_dir) if skip_history else self._empty_history()
@@ -432,7 +438,7 @@ class Pipeline:
             action_label = "direct-reply" if reply else "quote-tweet"
             print(f"[DEBUG] Drafting {action_label} response for: {article.publisher}")
             try:
-                draft = self.drafter.draft_debate(article, style, reply=True, stance=stance, is_targeted=(target_url is not None))
+                draft = self.drafter.draft_debate(article, style, reply=True, stance=stance, is_targeted=(target_url is not None), language=language)
             except Exception as e:
                 safe_err = str(e).encode('ascii', errors='replace').decode('ascii')
                 print(f"[DEBUG] Skipping tweet due to LLM failure: {safe_err}")
